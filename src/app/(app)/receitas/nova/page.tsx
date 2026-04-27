@@ -20,6 +20,7 @@ type RecipeForm = {
   yield_amount: string
   yield_unit: string
   profit_margin: string
+  sale_price: string
   instructions: string
   notes: string
 }
@@ -88,6 +89,7 @@ const initialForm: RecipeForm = {
   yield_amount: '',
   yield_unit: 'unidades',
   profit_margin: '30',
+  sale_price: '',
   instructions: '',
   notes: '',
 }
@@ -100,6 +102,16 @@ function parseDecimal(value: string) {
 function optionalText(value: string) {
   const trimmedValue = value.trim()
   return trimmedValue || null
+}
+
+function optionalDecimal(value: string) {
+  const trimmedValue = value.trim()
+
+  if (!trimmedValue) return null
+
+  const parsed = Number(trimmedValue.replace(',', '.'))
+
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function normalizeUnit(value: string) {
@@ -222,6 +234,7 @@ export default function NovaReceitaPage() {
 
   const yieldAmount = useMemo(() => parseDecimal(form.yield_amount), [form.yield_amount])
   const profitMargin = useMemo(() => parseDecimal(form.profit_margin), [form.profit_margin])
+  const salePrice = useMemo(() => optionalDecimal(form.sale_price), [form.sale_price])
 
   const ingredientCosts = useMemo(() => {
     return new Map(
@@ -309,6 +322,9 @@ export default function NovaReceitaPage() {
     if (profitMargin < 0 || profitMargin >= 100) {
       return 'Margem de lucro deve ficar entre 0% e 99,99%'
     }
+    if (form.sale_price.trim() && (salePrice === null || salePrice < 0)) {
+      return 'Preço que eu cobro deve ser um valor válido'
+    }
     if (recipeIngredients.length === 0) return 'Adicione pelo menos um ingrediente'
 
     const invalidIngredient = recipeIngredients.some(
@@ -357,6 +373,7 @@ export default function NovaReceitaPage() {
             cost_per_unit: costPerUnit,
             profit_margin: profitMargin,
             suggested_price: suggestedPrice,
+            sale_price: salePrice,
             instructions: optionalText(form.instructions),
             notes: optionalText(form.notes),
           },
@@ -727,6 +744,30 @@ export default function NovaReceitaPage() {
                 <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
                 <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
                   {formatCurrency(costPerUnit)}
+                </p>
+              </div>
+
+              <div className="md:col-span-2">
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="sale_price"
+                >
+                  Preço que eu cobro
+                </label>
+                <input
+                  id="sale_price"
+                  name="sale_price"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={form.sale_price}
+                  onChange={handleFormChange}
+                  placeholder="0,00"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                />
+                <p className="mt-2 text-sm text-[#999999]">
+                  Se vazio, o app usará o preço sugerido nos pedidos.
                 </p>
               </div>
             </div>

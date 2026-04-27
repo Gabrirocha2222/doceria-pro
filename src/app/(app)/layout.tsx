@@ -18,6 +18,7 @@ const menuItems = [
   { href: '/pedidos', label: 'Pedidos', icon: '📦', id: 'pedidos' },
   { href: '/receitas', label: 'Receitas', icon: '🎂', id: 'receitas' },
   { href: '/ingredientes', label: 'Ingredientes', icon: '🧂', id: 'ingredientes' },
+  { href: '/embalagens', label: 'Embalagens', icon: '📦', id: 'embalagens' },
   { href: '/fornecedores', label: 'Fornecedores', icon: '🚚', id: 'fornecedores' },
   { href: '/clientes', label: 'Clientes', icon: '👩', id: 'clientes' },
   { href: '/lista-compras', label: 'Lista de compras', icon: '🛒', id: 'lista-compras' },
