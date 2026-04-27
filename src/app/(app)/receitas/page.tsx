@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   BookOpen,
   CircleDollarSign,
+  Package,
   Percent,
   Plus,
   Search,
@@ -13,34 +14,72 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
+type NumericValue = number | string | null | undefined
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
+
 interface Recipe {
   id: string
   user_id: string
   name: string
   category: string | null
-  yield_amount: number | null
+  yield_amount: NumericValue
   yield_unit: string | null
-  total_cost: number | null
-  cost_per_unit: number | null
-  profit_margin: number | null
-  suggested_price: number | null
-  sale_price: number | null
+  total_cost: NumericValue
+  cost_per_unit: NumericValue
+  profit_margin: NumericValue
+  suggested_price: NumericValue
+  sale_price: NumericValue
   instructions: string | null
   notes: string | null
   created_at?: string
 }
 
-function formatCurrency(value: number | null | undefined) {
+type RecipePackagingLink = {
+  recipe_id: string
+}
+
+function parseNumericValue(value: NumericValue) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(',', '.'))
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  return 0
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+  })
+}
+
+function formatCurrency(value: NumericValue) {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
     currency: 'BRL',
-  }).format(value ?? 0)
+  }).format(parseNumericValue(value))
 }
 
-function formatNumber(value: number | null | undefined) {
+function formatNumber(value: NumericValue) {
   return new Intl.NumberFormat('pt-BR', {
     maximumFractionDigits: 3,
-  }).format(value ?? 0)
+  }).format(parseNumericValue(value))
 }
 
 function formatYield(recipe: Recipe) {
@@ -56,6 +95,9 @@ function getEffectiveSalePrice(recipe: Recipe) {
 
 export default function ReceitasPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [packagingCountByRecipeId, setPackagingCountByRecipeId] = useState<Record<string, number>>(
+    {}
+  )
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -86,8 +128,31 @@ export default function ReceitasPage() {
 
         if (recipesError) throw recipesError
 
+        const recipeRows = (data ?? []) as Recipe[]
+        const recipeIds = recipeRows.map((recipe) => recipe.id)
+        const packagingCounts = new Map<string, number>()
+
+        if (recipeIds.length > 0) {
+          const { data: packagingLinks, error: packagingError } = await supabase
+            .from('recipe_packaging')
+            .select('recipe_id')
+            .eq('user_id', user.id)
+            .in('recipe_id', recipeIds)
+
+          if (packagingError) {
+            logSupabaseError('Erro Supabase recipe_packaging:', packagingError)
+          } else {
+            const links = (packagingLinks ?? []) as RecipePackagingLink[]
+
+            links.forEach((link) => {
+              packagingCounts.set(link.recipe_id, (packagingCounts.get(link.recipe_id) ?? 0) + 1)
+            })
+          }
+        }
+
         if (isMounted) {
-          setRecipes((data ?? []) as Recipe[])
+          setRecipes(recipeRows)
+          setPackagingCountByRecipeId(Object.fromEntries(packagingCounts))
         }
       } catch (err) {
         console.error('Erro ao carregar receitas:', err)
@@ -197,6 +262,8 @@ export default function ReceitasPage() {
             {filteredRecipes.map((recipe) => {
               const effectiveSalePrice = getEffectiveSalePrice(recipe)
               const usesSuggestedPrice = recipe.sale_price == null
+              const packagingCount = packagingCountByRecipeId[recipe.id] ?? 0
+              const hasPackaging = packagingCount > 0
 
               return (
                 <article
@@ -251,6 +318,28 @@ export default function ReceitasPage() {
                             : formatCurrency(recipe.sale_price)}
                         </p>
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-4 flex items-center gap-3 rounded-lg bg-[#FAF6F0] p-3 text-sm">
+                    <Package
+                      size={17}
+                      className={hasPackaging ? 'text-[#C9A84C]' : 'text-[#999999]'}
+                      aria-hidden="true"
+                    />
+                    <div>
+                      <p className="font-semibold text-[#1A0A08]">
+                        {hasPackaging
+                          ? `${packagingCount} ${
+                              packagingCount === 1 ? 'embalagem vinculada' : 'embalagens vinculadas'
+                            }`
+                          : 'Sem embalagens vinculadas'}
+                      </p>
+                      {hasPackaging && (
+                        <p className="text-xs text-[#999999]">
+                          Custo de embalagem incluido na precificacao.
+                        </p>
+                      )}
                     </div>
                   </div>
 

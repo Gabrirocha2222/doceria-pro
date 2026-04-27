@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Calculator,
+  Package,
   Plus,
   Save,
   Trash2,
@@ -42,6 +43,31 @@ type RecipeIngredientItem = {
 type UnitDefinition = {
   kind: 'weight' | 'volume' | 'count'
   factor: number
+}
+
+type NumericValue = number | string | null | undefined
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
+
+type RecipePackagingItem = {
+  localId: string
+  packaging_id: string
+  usage_type: 'unitaria' | 'transporte'
+  quantity_per_recipe_unit: string
+  notes: string
+}
+
+type Packaging = {
+  id: string
+  name: string
+  cost_per_unit: NumericValue
+  capacity: NumericValue
+  capacity_unit: string | null
 }
 
 const categoryOptions = [
@@ -99,6 +125,18 @@ function parseDecimal(value: string) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function parseNumericValue(value: NumericValue) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0
+  }
+
+  if (typeof value === 'string') {
+    return parseDecimal(value)
+  }
+
+  return 0
+}
+
 function optionalText(value: string) {
   const trimmedValue = value.trim()
   return trimmedValue || null
@@ -133,8 +171,26 @@ function formatCurrency(value: number) {
   }).format(value)
 }
 
+function formatNumber(value: NumericValue) {
+  return new Intl.NumberFormat('pt-BR', {
+    maximumFractionDigits: 2,
+  }).format(parseNumericValue(value))
+}
+
 function createLocalId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+  })
 }
 
 function calculateIngredientCost(item: RecipeIngredientItem, ingredient?: Ingredient) {
@@ -171,10 +227,36 @@ function calculateSuggestedPrice(totalCost: number, profitMargin: number) {
   return totalCost / (1 - profitMargin / 100)
 }
 
+function calculatePackagingItemCost(
+  item: RecipePackagingItem,
+  packaging: Packaging | undefined,
+  recipeYield: number
+) {
+  if (!packaging || recipeYield <= 0) return 0
+
+  const costPerUnit = parseNumericValue(packaging.cost_per_unit)
+  if (costPerUnit <= 0) return 0
+
+  if (item.usage_type === 'transporte') {
+    const capacity = parseNumericValue(packaging.capacity)
+    const safeCapacity = capacity > 0 ? capacity : 1
+
+    return Math.ceil(recipeYield / safeCapacity) * costPerUnit
+  }
+
+  const quantityPerRecipeUnit = parseDecimal(item.quantity_per_recipe_unit)
+
+  if (quantityPerRecipeUnit <= 0) return 0
+
+  return quantityPerRecipeUnit * costPerUnit * recipeYield
+}
+
 export default function NovaReceitaPage() {
   const [form, setForm] = useState<RecipeForm>(initialForm)
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredientItem[]>([])
+  const [availablePackaging, setAvailablePackaging] = useState<Packaging[]>([])
+  const [recipePackaging, setRecipePackaging] = useState<RecipePackagingItem[]>([])
   const [isLoadingIngredients, setIsLoadingIngredients] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -204,15 +286,30 @@ export default function NovaReceitaPage() {
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
-        if (ingredientsError) throw ingredientsError
+        if (ingredientsError) {
+          logSupabaseError('Erro Supabase ingredients:', ingredientsError)
+          throw ingredientsError
+        }
+
+        const { data: packagingData, error: packagingError } = await supabase
+          .from('packaging')
+          .select('id, name, cost_per_unit, capacity, capacity_unit')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (packagingError) {
+          logSupabaseError('Erro Supabase packaging:', packagingError)
+          throw packagingError
+        }
 
         if (isMounted) {
           setIngredients((data ?? []) as Ingredient[])
+          setAvailablePackaging((packagingData ?? []) as Packaging[])
         }
       } catch (err) {
         console.error('Erro ao carregar ingredientes:', err)
         if (isMounted) {
-          setError('Falha ao carregar ingredientes')
+          setError('Falha ao carregar dados da receita')
         }
       } finally {
         if (isMounted) {
@@ -232,6 +329,10 @@ export default function NovaReceitaPage() {
     return new Map(ingredients.map((ingredient) => [ingredient.id, ingredient]))
   }, [ingredients])
 
+  const packagingById = useMemo(() => {
+    return new Map(availablePackaging.map((packaging) => [packaging.id, packaging]))
+  }, [availablePackaging])
+
   const yieldAmount = useMemo(() => parseDecimal(form.yield_amount), [form.yield_amount])
   const profitMargin = useMemo(() => parseDecimal(form.profit_margin), [form.profit_margin])
   const salePrice = useMemo(() => optionalDecimal(form.sale_price), [form.sale_price])
@@ -245,10 +346,24 @@ export default function NovaReceitaPage() {
     )
   }, [ingredientById, recipeIngredients])
 
-  const totalCost = useMemo(() => {
+  const ingredientTotalCost = useMemo(() => {
     return Array.from(ingredientCosts.values()).reduce((sum, cost) => sum + cost, 0)
   }, [ingredientCosts])
 
+  const packagingCosts = useMemo(() => {
+    return new Map(
+      recipePackaging.map((item) => [
+        item.localId,
+        calculatePackagingItemCost(item, packagingById.get(item.packaging_id), yieldAmount),
+      ])
+    )
+  }, [packagingById, recipePackaging, yieldAmount])
+
+  const packagingTotalCost = useMemo(() => {
+    return Array.from(packagingCosts.values()).reduce((sum, cost) => sum + cost, 0)
+  }, [packagingCosts])
+
+  const totalCost = ingredientTotalCost + packagingTotalCost
   const costPerUnit = yieldAmount > 0 ? totalCost / yieldAmount : 0
   const suggestedPrice = calculateSuggestedPrice(totalCost, profitMargin)
 
@@ -315,6 +430,62 @@ export default function NovaReceitaPage() {
     )
   }
 
+  function addRecipePackaging() {
+    const firstPackaging = availablePackaging[0]
+
+    if (!firstPackaging) {
+      setError('Cadastre embalagens antes de vincular ao produto')
+      return
+    }
+
+    setRecipePackaging((currentItems) => [
+      ...currentItems,
+      {
+        localId: createLocalId(),
+        packaging_id: firstPackaging.id,
+        usage_type: 'unitaria',
+        quantity_per_recipe_unit: '1',
+        notes: '',
+      },
+    ])
+  }
+
+  function updateRecipePackaging(
+    localId: string,
+    field: 'packaging_id' | 'usage_type' | 'quantity_per_recipe_unit' | 'notes',
+    value: string
+  ) {
+    setRecipePackaging((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== localId) return item
+
+        if (field === 'usage_type') {
+          const usageType = value === 'transporte' ? 'transporte' : 'unitaria'
+
+          return {
+            ...item,
+            usage_type: usageType,
+            quantity_per_recipe_unit:
+              usageType === 'unitaria' && !item.quantity_per_recipe_unit
+                ? '1'
+                : item.quantity_per_recipe_unit,
+          }
+        }
+
+        return {
+          ...item,
+          [field]: value,
+        }
+      })
+    )
+  }
+
+  function removeRecipePackaging(localId: string) {
+    setRecipePackaging((currentItems) =>
+      currentItems.filter((item) => item.localId !== localId)
+    )
+  }
+
   function validateForm() {
     if (!form.name.trim()) return 'Nome da receita é obrigatório'
     if (yieldAmount <= 0) return 'Rendimento deve ser maior que zero'
@@ -333,6 +504,16 @@ export default function NovaReceitaPage() {
 
     if (invalidIngredient) {
       return 'Confira ingrediente, quantidade e unidade de todos os itens'
+    }
+
+    const invalidPackaging = recipePackaging.some((item) => {
+      if (!item.packaging_id) return true
+
+      return item.usage_type === 'unitaria' && parseDecimal(item.quantity_per_recipe_unit) <= 0
+    })
+
+    if (invalidPackaging) {
+      return 'Confira embalagem, tipo de uso e quantidade dos itens unitários'
     }
 
     return ''
@@ -407,6 +588,29 @@ export default function NovaReceitaPage() {
           JSON.stringify(recipeIngredientsError, null, 2)
         )
         throw recipeIngredientsError
+      }
+
+      if (recipePackaging.length > 0) {
+        const recipePackagingPayload = recipePackaging.map((item) => ({
+          user_id: user.id,
+          recipe_id: createdRecipe.id,
+          packaging_id: item.packaging_id,
+          usage_type: item.usage_type,
+          quantity_per_recipe_unit:
+            item.usage_type === 'unitaria'
+              ? parseDecimal(item.quantity_per_recipe_unit)
+              : null,
+          notes: optionalText(item.notes),
+        }))
+
+        const { error: recipePackagingError } = await supabase
+          .from('recipe_packaging')
+          .insert(recipePackagingPayload)
+
+        if (recipePackagingError) {
+          logSupabaseError('Erro Supabase recipe_packaging:', recipePackagingError)
+          throw recipePackagingError
+        }
       }
 
       router.push('/receitas')
@@ -694,6 +898,179 @@ export default function NovaReceitaPage() {
           </section>
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#FAF6F0] text-[#C9A84C]">
+                  <Package size={22} aria-hidden="true" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-[#1A0A08]">Embalagens do produto</h2>
+                  <p className="mt-1 text-sm text-[#999999]">
+                    Vincule forminhas, caixas, bandejas ou itens de transporte usados na receita.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={addRecipePackaging}
+                disabled={isLoadingIngredients || availablePackaging.length === 0}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Plus size={18} aria-hidden="true" />
+                <span>Adicionar embalagem</span>
+              </button>
+            </div>
+
+            {isLoadingIngredients ? (
+              <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
+                Carregando embalagens...
+              </div>
+            ) : availablePackaging.length === 0 ? (
+              <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
+                Nenhuma embalagem cadastrada.{' '}
+                <Link href="/embalagens/nova" className="font-semibold text-[#C0392B]">
+                  Cadastre embalagens primeiro.
+                </Link>
+              </div>
+            ) : recipePackaging.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                Adicione embalagens para incluir esse custo na precificacao.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {recipePackaging.map((item, index) => {
+                  const selectedPackaging = packagingById.get(item.packaging_id)
+                  const itemCost = packagingCosts.get(item.localId) ?? 0
+                  const capacity = parseNumericValue(selectedPackaging?.capacity)
+
+                  return (
+                    <div
+                      key={item.localId}
+                      className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-sm font-bold text-[#1A0A08]">
+                          Embalagem {index + 1}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => removeRecipePackaging(item.localId)}
+                          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                          aria-label="Remover embalagem"
+                        >
+                          <Trash2 size={17} aria-hidden="true" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_150px_150px_140px] md:items-end">
+                        <div>
+                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                            Embalagem
+                          </label>
+                          <select
+                            value={item.packaging_id}
+                            onChange={(event) =>
+                              updateRecipePackaging(
+                                item.localId,
+                                'packaging_id',
+                                event.target.value
+                              )
+                            }
+                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                          >
+                            {availablePackaging.map((packaging) => (
+                              <option key={packaging.id} value={packaging.id}>
+                                {packaging.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                            Tipo de uso
+                          </label>
+                          <select
+                            value={item.usage_type}
+                            onChange={(event) =>
+                              updateRecipePackaging(
+                                item.localId,
+                                'usage_type',
+                                event.target.value
+                              )
+                            }
+                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                          >
+                            <option value="unitaria">Unitaria</option>
+                            <option value="transporte">Transporte</option>
+                          </select>
+                        </div>
+
+                        {item.usage_type === 'unitaria' ? (
+                          <div>
+                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                              Qtd. por unidade
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.0001"
+                              inputMode="decimal"
+                              value={item.quantity_per_recipe_unit}
+                              onChange={(event) =>
+                                updateRecipePackaging(
+                                  item.localId,
+                                  'quantity_per_recipe_unit',
+                                  event.target.value
+                                )
+                              }
+                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                            />
+                          </div>
+                        ) : (
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="text-xs font-medium text-[#999999]">Capacidade</p>
+                            <p className="mt-1 font-bold text-[#1A0A08]">
+                              {capacity > 0
+                                ? `${formatNumber(capacity)} ${
+                                    selectedPackaging?.capacity_unit || 'unidades'
+                                  }`
+                                : 'Usando 1'}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="rounded-lg bg-white p-3">
+                          <p className="text-xs font-medium text-[#999999]">Custo estimado</p>
+                          <p className="mt-1 font-bold text-[#1A0A08]">
+                            {formatCurrency(itemCost)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3">
+                        <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                          Observacoes
+                        </label>
+                        <input
+                          type="text"
+                          value={item.notes}
+                          onChange={(event) =>
+                            updateRecipePackaging(item.localId, 'notes', event.target.value)
+                          }
+                          placeholder="Ex: caixa apenas para entregas acima de 48 unidades"
+                          className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex items-center gap-3">
               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#FAF6F0] text-[#C9A84C]">
                 <Calculator size={22} aria-hidden="true" />
@@ -706,7 +1083,21 @@ export default function NovaReceitaPage() {
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo total dos ingredientes</p>
+                <p className="text-xs font-medium text-[#999999]">Custo dos ingredientes</p>
+                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                  {formatCurrency(ingredientTotalCost)}
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-[#FAF6F0] p-4">
+                <p className="text-xs font-medium text-[#999999]">Custo das embalagens</p>
+                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                  {formatCurrency(packagingTotalCost)}
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-[#FAF6F0] p-4">
+                <p className="text-xs font-medium text-[#999999]">Custo total</p>
                 <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
                   {formatCurrency(totalCost)}
                 </p>
@@ -734,16 +1125,16 @@ export default function NovaReceitaPage() {
               </div>
 
               <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Preço sugerido</p>
+                <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
                 <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(suggestedPrice)}
+                  {formatCurrency(costPerUnit)}
                 </p>
               </div>
 
               <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
+                <p className="text-xs font-medium text-[#999999]">Preço sugerido</p>
                 <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(costPerUnit)}
+                  {formatCurrency(suggestedPrice)}
                 </p>
               </div>
 
