@@ -11,9 +11,18 @@ import {
   Menu,
   LogOut,
   Plus,
+  Settings as SettingsIcon,
+  type LucideIcon,
 } from 'lucide-react'
 
-const menuItems = [
+type MenuItem = {
+  href: string
+  label: string
+  icon: string | LucideIcon
+  id: string
+}
+
+const menuItems: MenuItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: '🏠', id: 'dashboard' },
   { href: '/pedidos', label: 'Pedidos', icon: '📦', id: 'pedidos' },
   { href: '/receitas', label: 'Receitas', icon: '🎂', id: 'receitas' },
@@ -25,7 +34,16 @@ const menuItems = [
   { href: '/lista-compras', label: 'Lista de compras', icon: '🛒', id: 'lista-compras' },
   { href: '/financeiro', label: 'Financeiro', icon: '💰', id: 'financeiro' },
   { href: '/agenda', label: 'Agenda', icon: '📅', id: 'agenda' },
+  { href: '/configuracoes', label: 'Configurações', icon: SettingsIcon, id: 'configuracoes' },
 ]
+
+function renderMenuIcon(icon: MenuItem['icon'], size = 20) {
+  if (typeof icon === 'string') return icon
+
+  const Icon = icon
+
+  return <Icon size={size} aria-hidden="true" />
+}
 
 export default function AppLayout({
   children,
@@ -89,7 +107,7 @@ export default function AppLayout({
                   : 'text-[#999999] hover:text-[#E8956D]'
               }`}
             >
-              {item.icon}
+              {renderMenuIcon(item.icon)}
             </Link>
           ))}
         </nav>
@@ -203,7 +221,9 @@ export default function AppLayout({
                         : 'text-[#1A0A08] hover:bg-[#FAF6F0]'
                     }`}
                   >
-                    <span className="mr-2">{item.icon}</span>
+                    <span className="mr-2 inline-flex w-5 justify-center">
+                      {renderMenuIcon(item.icon, 18)}
+                    </span>
                     {item.label}
                   </Link>
                 ))}
