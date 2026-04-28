@@ -36,6 +36,8 @@ interface Recipe {
   profit_margin: NumericValue
   suggested_price: NumericValue
   sale_price: NumericValue
+  supplier_cost: NumericValue
+  supplier_cost_unit: string | null
   product_type: ProductType | null
   is_third_party: boolean | null
   supplier_id: string | null
@@ -419,30 +421,39 @@ export default function ReceitasPage() {
                       <p className="mt-1 text-xs text-[#999999]">
                         {supplierName ? `Fornecedor: ${supplierName}` : 'Fornecedor nao definido'}
                       </p>
+                      <p className="mt-2 text-xs text-[#999999]">Custo fornecedor</p>
+                      <p className="font-bold text-[#1A0A08]">
+                        {formatCurrency(recipe.supplier_cost)}
+                        {recipe.supplier_cost_unit ? ` / ${recipe.supplier_cost_unit}` : ''}
+                      </p>
                     </div>
                   )}
 
-                  <div className="mb-4 flex items-center gap-3 rounded-lg bg-[#FAF6F0] p-3 text-sm">
-                    <Package
-                      size={17}
-                      className={hasPackaging ? 'text-[#C9A84C]' : 'text-[#999999]'}
-                      aria-hidden="true"
-                    />
-                    <div>
-                      <p className="font-semibold text-[#1A0A08]">
-                        {hasPackaging
-                          ? `${packagingCount} ${
-                              packagingCount === 1 ? 'embalagem vinculada' : 'embalagens vinculadas'
-                            }`
-                          : 'Sem embalagens vinculadas'}
-                      </p>
-                      {hasPackaging && (
-                        <p className="text-xs text-[#999999]">
-                          Custo de embalagem incluido na precificacao.
+                  {!isThirdParty && (
+                    <div className="mb-4 flex items-center gap-3 rounded-lg bg-[#FAF6F0] p-3 text-sm">
+                      <Package
+                        size={17}
+                        className={hasPackaging ? 'text-[#C9A84C]' : 'text-[#999999]'}
+                        aria-hidden="true"
+                      />
+                      <div>
+                        <p className="font-semibold text-[#1A0A08]">
+                          {hasPackaging
+                            ? `${packagingCount} ${
+                                packagingCount === 1
+                                  ? 'embalagem vinculada'
+                                  : 'embalagens vinculadas'
+                              }`
+                            : 'Sem embalagens vinculadas'}
                         </p>
-                      )}
+                        {hasPackaging && (
+                          <p className="text-xs text-[#999999]">
+                            Custo de embalagem incluido na precificacao.
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>

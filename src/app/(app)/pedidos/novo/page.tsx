@@ -24,6 +24,8 @@ type Recipe = {
   supplier_id: string | null
   sale_price: NumericValue
   suggested_price: NumericValue
+  supplier_cost: NumericValue
+  supplier_cost_unit: string | null
 }
 
 type ProductKitItem = {
@@ -158,6 +160,27 @@ function getEffectiveSalePrice(recipe: Recipe) {
   return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
 }
 
+function normalizeCostUnit(value: string | null) {
+  return (value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+function calculateSupplierEstimatedCost(recipe: Recipe, quantity: number) {
+  const supplierCost = parseNumericValue(recipe.supplier_cost)
+  const supplierCostUnit = normalizeCostUnit(recipe.supplier_cost_unit)
+
+  if (supplierCost <= 0) return null
+  if (supplierCostUnit === 'unidade' || supplierCostUnit === 'unidades') {
+    return quantity * supplierCost
+  }
+  if (supplierCostUnit === 'pedido') return supplierCost
+
+  return null
+}
+
 function logSupabaseError(context: string, error: unknown) {
   const supabaseError =
     typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
@@ -213,7 +236,9 @@ export default function NovoPedidoPage() {
 
         const { data: recipesData, error: recipesError } = await supabase
           .from('recipes')
-          .select('id, name, product_type, is_third_party, supplier_id, sale_price, suggested_price')
+          .select(
+            'id, name, product_type, is_third_party, supplier_id, sale_price, suggested_price, supplier_cost, supplier_cost_unit'
+          )
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
@@ -563,6 +588,8 @@ export default function NovoPedidoPage() {
 
     if (!recipe?.is_third_party || !recipe.supplier_id) return
 
+    const estimatedCost = calculateSupplierEstimatedCost(recipe, params.quantity)
+
     const details: SupplierOrderDetails = {
       flavor_details: params.flavorDetails,
       customer_name: form.customer_name.trim(),
@@ -581,6 +608,7 @@ export default function NovoPedidoPage() {
         unit: 'unidades',
         due_date: form.delivery_date || null,
         status: 'pendente',
+        estimated_cost: estimatedCost,
         details,
         notes: params.notes,
       },

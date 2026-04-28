@@ -31,6 +31,7 @@ type SupplierOrder = {
   title: string
   quantity: NumericValue
   unit: string | null
+  estimated_cost: NumericValue
   due_date: string | null
   status: SupplierOrderStatus
   details: JsonValue | null
@@ -90,6 +91,13 @@ function logSupabaseError(context: string, error: unknown) {
 function formatNumber(value: NumericValue) {
   return new Intl.NumberFormat('pt-BR', {
     maximumFractionDigits: 2,
+  }).format(parseNumericValue(value))
+}
+
+function formatCurrency(value: NumericValue) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
   }).format(parseNumericValue(value))
 }
 
@@ -363,13 +371,21 @@ export default function DetalhePedidoFornecedorPage() {
             </span>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <div className="rounded-lg bg-[#FAF6F0] p-4">
               <p className="text-xs text-[#999999]">Quantidade</p>
               <p className="mt-1 font-bold text-[#1A0A08]">
                 {formatNumber(supplierOrder.quantity)} {supplierOrder.unit || 'unidades'}
               </p>
             </div>
+            {supplierOrder.estimated_cost != null && (
+              <div className="rounded-lg bg-[#FAF6F0] p-4">
+                <p className="text-xs text-[#999999]">Custo estimado</p>
+                <p className="mt-1 font-bold text-[#1A0A08]">
+                  {formatCurrency(supplierOrder.estimated_cost)}
+                </p>
+              </div>
+            )}
             <div className="rounded-lg bg-[#FAF6F0] p-4">
               <p className="text-xs text-[#999999]">Prazo</p>
               <p className="mt-1 inline-flex items-center gap-1 font-bold text-[#1A0A08]">

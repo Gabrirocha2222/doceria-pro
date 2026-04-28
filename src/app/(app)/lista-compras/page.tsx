@@ -21,6 +21,7 @@ type Recipe = {
   category: string | null
   yield_amount: number | string | null
   yield_unit: string | null
+  is_third_party: boolean | null
 }
 
 type RecipeIngredient = {
@@ -222,13 +223,15 @@ export default function ListaComprasPage() {
 
         const { data: recipesData, error: recipesError } = await supabase
           .from('recipes')
-          .select('id, user_id, name, category, yield_amount, yield_unit')
+          .select('id, user_id, name, category, yield_amount, yield_unit, is_third_party')
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
         if (recipesError) throw recipesError
 
-        const loadedRecipes = (recipesData ?? []) as Recipe[]
+        const loadedRecipes = ((recipesData ?? []) as Recipe[]).filter(
+          (recipe) => recipe.is_third_party !== true
+        )
         const recipeIds = loadedRecipes.map((recipe) => recipe.id)
 
         let loadedRecipeIngredients: RecipeIngredient[] = []

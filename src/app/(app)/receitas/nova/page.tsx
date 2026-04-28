@@ -24,6 +24,8 @@ type RecipeForm = {
   product_type: ProductType
   is_third_party: ThirdPartyChoice
   supplier_id: string
+  supplier_cost: string
+  supplier_cost_unit: string
   yield_amount: string
   yield_unit: string
   profit_margin: string
@@ -85,7 +87,10 @@ type KitProduct = {
   id: string
   name: string
   total_cost: NumericValue
+  supplier_cost: NumericValue
+  supplier_cost_unit: string | null
   product_type: ProductType | null
+  is_third_party: boolean | null
 }
 
 type RecipeKitItem = {
@@ -104,6 +109,8 @@ const categoryOptions = [
   'Sobremesas',
   'Outros',
 ]
+
+const supplierCostUnitOptions = ['unidade', 'cento', 'kg', 'pedido', 'outro']
 
 const unitDefinitions: Record<string, UnitDefinition> = {
   g: { kind: 'weight', factor: 1 },
@@ -140,6 +147,8 @@ const initialForm: RecipeForm = {
   product_type: 'simples',
   is_third_party: 'nao',
   supplier_id: '',
+  supplier_cost: '',
+  supplier_cost_unit: 'unidade',
   yield_amount: '',
   yield_unit: 'unidades',
   profit_margin: '30',
@@ -279,11 +288,21 @@ function calculatePackagingItemCost(
   return quantityPerRecipeUnit * costPerUnit * recipeYield
 }
 
+function getKitProductBaseCost(product: KitProduct) {
+  const supplierCost = parseNumericValue(product.supplier_cost)
+
+  if (product.is_third_party && supplierCost > 0) {
+    return supplierCost
+  }
+
+  return parseNumericValue(product.total_cost)
+}
+
 function calculateKitItemCost(item: RecipeKitItem, product: KitProduct | undefined) {
   if (!product) return 0
 
   const quantity = parseDecimal(item.quantity)
-  const itemCost = parseNumericValue(product.total_cost)
+  const itemCost = getKitProductBaseCost(product)
 
   if (quantity <= 0 || itemCost <= 0) return 0
 
@@ -357,7 +376,7 @@ export default function NovaReceitaPage() {
 
         const { data: kitProductsData, error: kitProductsError } = await supabase
           .from('recipes')
-          .select('id, name, total_cost, product_type')
+          .select('id, name, total_cost, supplier_cost, supplier_cost_unit, product_type, is_third_party')
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
@@ -405,9 +424,13 @@ export default function NovaReceitaPage() {
 
   const isKit = form.product_type === 'kit'
   const isThirdParty = form.is_third_party === 'sim'
+  const isSimpleThirdParty = !isKit && isThirdParty
+  const isSimpleInternal = !isKit && !isThirdParty
   const yieldAmount = useMemo(() => parseDecimal(form.yield_amount), [form.yield_amount])
   const profitMargin = useMemo(() => parseDecimal(form.profit_margin), [form.profit_margin])
   const salePrice = useMemo(() => optionalDecimal(form.sale_price), [form.sale_price])
+  const supplierCost = useMemo(() => optionalDecimal(form.supplier_cost), [form.supplier_cost])
+  const supplierCostAmount = supplierCost ?? 0
 
   const ingredientCosts = useMemo(() => {
     return new Map(
@@ -448,9 +471,15 @@ export default function NovaReceitaPage() {
     return Array.from(kitItemCosts.values()).reduce((sum, cost) => sum + cost, 0)
   }, [kitItemCosts])
 
-  const simpleTotalCost = ingredientTotalCost + packagingTotalCost
+  const simpleTotalCost = isSimpleThirdParty
+    ? supplierCostAmount
+    : ingredientTotalCost + packagingTotalCost
   const totalCost = isKit ? kitTotalCost : simpleTotalCost
-  const costPerUnit = yieldAmount > 0 ? totalCost / yieldAmount : 0
+  const costPerUnit = isSimpleThirdParty
+    ? supplierCostAmount
+    : yieldAmount > 0
+      ? totalCost / yieldAmount
+      : 0
   const suggestedPrice = calculateSuggestedPrice(totalCost, profitMargin)
 
   function handleFormChange(
@@ -461,10 +490,15 @@ export default function NovaReceitaPage() {
 
     if (field === 'product_type') {
       const productType: ProductType = value === 'kit' ? 'kit' : 'simples'
+      const nextIsKit = productType === 'kit'
 
       setForm((currentForm) => ({
         ...currentForm,
         product_type: productType,
+        is_third_party: nextIsKit ? 'nao' : currentForm.is_third_party,
+        supplier_id: nextIsKit ? '' : currentForm.supplier_id,
+        supplier_cost: nextIsKit ? '' : currentForm.supplier_cost,
+        supplier_cost_unit: currentForm.supplier_cost_unit || 'unidade',
         yield_amount:
           productType === 'kit' && !currentForm.yield_amount ? '1' : currentForm.yield_amount,
         yield_unit: productType === 'kit' && !currentForm.yield_unit ? 'kit' : currentForm.yield_unit,
@@ -480,6 +514,9 @@ export default function NovaReceitaPage() {
         ...currentForm,
         is_third_party: thirdPartyChoice,
         supplier_id: thirdPartyChoice === 'sim' ? currentForm.supplier_id : '',
+        supplier_cost: thirdPartyChoice === 'sim' ? currentForm.supplier_cost : '',
+        supplier_cost_unit:
+          thirdPartyChoice === 'sim' ? currentForm.supplier_cost_unit || 'unidade' : 'unidade',
       }))
 
       return
@@ -649,14 +686,6 @@ export default function NovaReceitaPage() {
     if (form.sale_price.trim() && (salePrice === null || salePrice < 0)) {
       return 'Preço que eu cobro deve ser um valor válido'
     }
-    if (
-      isThirdParty &&
-      form.supplier_id &&
-      !suppliers.some((supplier) => supplier.id === form.supplier_id)
-    ) {
-      return 'Selecione um fornecedor valido'
-    }
-
     if (isKit) {
       if (recipeKitItems.length === 0) return 'Adicione pelo menos um item ao kit'
 
@@ -667,6 +696,19 @@ export default function NovaReceitaPage() {
       if (invalidKitItem) {
         return 'Confira produto e quantidade de todos os itens do kit'
       }
+
+      return ''
+    }
+
+    if (isSimpleThirdParty) {
+      if (!form.supplier_id) return 'Selecione o fornecedor do produto terceirizado'
+      if (!suppliers.some((supplier) => supplier.id === form.supplier_id)) {
+        return 'Selecione um fornecedor valido'
+      }
+      if (supplierCost === null || supplierCost <= 0) {
+        return 'Informe o custo pago ao fornecedor'
+      }
+      if (!form.supplier_cost_unit.trim()) return 'Selecione a unidade do custo do fornecedor'
 
       return ''
     }
@@ -724,8 +766,10 @@ export default function NovaReceitaPage() {
             name: form.name.trim(),
             category: form.category,
             product_type: form.product_type,
-            is_third_party: isThirdParty,
-            supplier_id: isThirdParty ? optionalText(form.supplier_id) : null,
+            is_third_party: isSimpleThirdParty,
+            supplier_id: isSimpleThirdParty ? optionalText(form.supplier_id) : null,
+            supplier_cost: isSimpleThirdParty ? supplierCost : null,
+            supplier_cost_unit: isSimpleThirdParty ? optionalText(form.supplier_cost_unit) : null,
             yield_amount: yieldAmount,
             yield_unit: form.yield_unit.trim(),
             total_cost: totalCost,
@@ -766,7 +810,7 @@ export default function NovaReceitaPage() {
           logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
           throw kitItemsError
         }
-      } else {
+      } else if (isSimpleInternal) {
         const recipeIngredientsPayload = recipeIngredients.map((item) => ({
           recipe_id: createdRecipe.id,
           ingredient_id: item.ingredient_id,
@@ -906,26 +950,28 @@ export default function NovaReceitaPage() {
                 </select>
               </div>
 
-              <div>
-                <label
-                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
-                  htmlFor="is_third_party"
-                >
-                  Produto terceirizado?
-                </label>
-                <select
-                  id="is_third_party"
-                  name="is_third_party"
-                  value={form.is_third_party}
-                  onChange={handleFormChange}
-                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
-                >
-                  <option value="nao">Nao</option>
-                  <option value="sim">Sim</option>
-                </select>
-              </div>
+              {!isKit && (
+                <div>
+                  <label
+                    className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                    htmlFor="is_third_party"
+                  >
+                    Produto terceirizado?
+                  </label>
+                  <select
+                    id="is_third_party"
+                    name="is_third_party"
+                    value={form.is_third_party}
+                    onChange={handleFormChange}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                  >
+                    <option value="nao">Nao</option>
+                    <option value="sim">Sim</option>
+                  </select>
+                </div>
+              )}
 
-              {isThirdParty && (
+              {isSimpleThirdParty && (
                 <div className="md:col-span-2">
                   <label
                     className="mb-2 block text-sm font-semibold text-[#1A0A08]"
@@ -948,7 +994,7 @@ export default function NovaReceitaPage() {
                       onChange={handleFormChange}
                       className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                     >
-                      <option value="">Sem fornecedor definido</option>
+                      <option value="">Selecione um fornecedor</option>
                       {suppliers.map((supplier) => (
                         <option key={supplier.id} value={supplier.id}>
                           {supplier.name}
@@ -1035,6 +1081,62 @@ export default function NovaReceitaPage() {
             </div>
           </section>
 
+          {isSimpleThirdParty && (
+            <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-[#1A0A08]">Custo do fornecedor</h2>
+                <p className="mt-1 text-sm text-[#999999]">
+                  Informe o custo que voce paga para comprar este produto pronto.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label
+                    className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                    htmlFor="supplier_cost"
+                  >
+                    Custo pago ao fornecedor
+                  </label>
+                  <input
+                    id="supplier_cost"
+                    name="supplier_cost"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={form.supplier_cost}
+                    onChange={handleFormChange}
+                    placeholder="0,00"
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                    htmlFor="supplier_cost_unit"
+                  >
+                    Unidade do custo
+                  </label>
+                  <select
+                    id="supplier_cost_unit"
+                    name="supplier_cost_unit"
+                    value={form.supplier_cost_unit}
+                    onChange={handleFormChange}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                  >
+                    {supplierCostUnitOptions.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {unit}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </section>
+          )}
+
           {isKit && (
             <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1072,6 +1174,9 @@ export default function NovaReceitaPage() {
                 <div className="space-y-3">
                   {recipeKitItems.map((item, index) => {
                     const selectedProduct = kitProductById.get(item.item_recipe_id)
+                    const selectedProductCost = selectedProduct
+                      ? getKitProductBaseCost(selectedProduct)
+                      : 0
                     const itemCost = kitItemCosts.get(item.localId) ?? 0
 
                     return (
@@ -1155,8 +1260,16 @@ export default function NovaReceitaPage() {
                           <div className="rounded-lg bg-white p-3">
                             <p className="text-xs font-medium text-[#999999]">Custo do produto</p>
                             <p className="mt-1 font-bold text-[#1A0A08]">
-                              {formatCurrency(selectedProduct?.total_cost)}
+                              {formatCurrency(selectedProductCost)}
                             </p>
+                            {selectedProduct?.is_third_party && (
+                              <p className="mt-1 text-xs text-[#999999]">
+                                Custo do fornecedor
+                                {selectedProduct.supplier_cost_unit
+                                  ? ` / ${selectedProduct.supplier_cost_unit}`
+                                  : ''}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1167,7 +1280,7 @@ export default function NovaReceitaPage() {
             </section>
           )}
 
-          {!isKit && (
+          {isSimpleInternal && (
             <>
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1299,8 +1412,6 @@ export default function NovaReceitaPage() {
               </div>
             )}
           </section>
-            </>
-          )}
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1474,6 +1585,8 @@ export default function NovaReceitaPage() {
               </div>
             )}
           </section>
+            </>
+          )}
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex items-center gap-3">
@@ -1494,6 +1607,16 @@ export default function NovaReceitaPage() {
                     {formatCurrency(kitTotalCost)}
                   </p>
                 </div>
+              ) : isSimpleThirdParty ? (
+                <div className="rounded-lg bg-[#FAF6F0] p-4">
+                  <p className="text-xs font-medium text-[#999999]">Custo do fornecedor</p>
+                  <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                    {formatCurrency(supplierCostAmount)}
+                  </p>
+                  <p className="mt-1 text-xs text-[#999999]">
+                    por {form.supplier_cost_unit || 'unidade'}
+                  </p>
+                </div>
               ) : (
                 <>
                   <div className="rounded-lg bg-[#FAF6F0] p-4">
@@ -1512,12 +1635,14 @@ export default function NovaReceitaPage() {
                 </>
               )}
 
-              <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo total</p>
-                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(totalCost)}
-                </p>
-              </div>
+              {!isSimpleThirdParty && (
+                <div className="rounded-lg bg-[#FAF6F0] p-4">
+                  <p className="text-xs font-medium text-[#999999]">Custo total</p>
+                  <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                    {formatCurrency(totalCost)}
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label
@@ -1540,12 +1665,14 @@ export default function NovaReceitaPage() {
                 />
               </div>
 
-              <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
-                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(costPerUnit)}
-                </p>
-              </div>
+              {!isSimpleThirdParty && (
+                <div className="rounded-lg bg-[#FAF6F0] p-4">
+                  <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
+                  <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                    {formatCurrency(costPerUnit)}
+                  </p>
+                </div>
+              )}
 
               <div className="rounded-lg bg-[#FAF6F0] p-4">
                 <p className="text-xs font-medium text-[#999999]">Preço sugerido</p>
