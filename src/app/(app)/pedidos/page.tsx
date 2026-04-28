@@ -31,10 +31,12 @@ type Order = {
   delivery_time: string
   total_value: NumericValue
   deposit_value: NumericValue
+  down_payment: NumericValue
   remaining_value: NumericValue
   status: string
   created_at: string
   notes?: string | null
+  fulfillment_type?: string | null
   customers?: {
     id: string
     name: string
@@ -354,15 +356,35 @@ export default function PedidosPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 md:flex-shrink-0">
+                      <div className="flex items-center justify-between gap-3 md:flex-shrink-0">
                       <div className="text-right">
                         <p className="font-bold text-[#1A0A08]">
                           {formatCurrency(order.total_value)}
                         </p>
-                        <p className="text-xs text-[#C9A84C]">
-                          {formatCurrency(order.deposit_value)} sinal
-                        </p>
+                        {order.down_payment ? (
+                          <>
+                            <p className="text-xs text-[#C9A84C]">
+                              {formatCurrency(order.down_payment)} sinal
+                            </p>
+                            <p className="text-xs text-[#999999]">
+                              {formatCurrency(
+                                Math.max(parseNumericValue(order.total_value) - parseNumericValue(order.down_payment), 0)
+                              )}{' '}
+                              restante
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-xs text-[#C9A84C]">
+                            {formatCurrency(order.deposit_value)} sinal
+                          </p>
+                        )}
                       </div>
+
+                      {order.fulfillment_type === 'entrega' && (
+                        <div className="rounded-full bg-[#C9A84C] px-2 py-1 text-xs font-semibold text-white">
+                          Entrega
+                        </div>
+                      )}
 
                       <div
                         className="rounded-full px-3 py-1.5 text-xs font-semibold text-white"

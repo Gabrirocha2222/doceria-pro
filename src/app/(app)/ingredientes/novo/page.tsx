@@ -14,7 +14,7 @@ type IngredientForm = {
   purchase_price: string
   usage_unit: string
   stock_quantity: string
-  minimum_stock: string
+  stock_unit: string
 }
 
 type UnitDefinition = {
@@ -114,7 +114,7 @@ const initialForm: IngredientForm = {
   purchase_price: '',
   usage_unit: '',
   stock_quantity: '',
-  minimum_stock: '',
+  stock_unit: '',
 }
 
 export default function NovoIngredientePage() {
@@ -130,7 +130,6 @@ export default function NovoIngredientePage() {
   )
   const purchasePrice = useMemo(() => parseDecimal(form.purchase_price), [form.purchase_price])
   const stockQuantity = useMemo(() => parseDecimal(form.stock_quantity), [form.stock_quantity])
-  const minimumStock = useMemo(() => parseDecimal(form.minimum_stock), [form.minimum_stock])
 
   const costPerUnit = useMemo(
     () =>
@@ -164,7 +163,6 @@ export default function NovoIngredientePage() {
     if (purchasePrice <= 0) return 'Preço de compra deve ser maior que zero'
     if (!form.usage_unit.trim()) return 'Unidade de uso na receita é obrigatória'
     if (stockQuantity < 0) return 'Estoque atual não pode ser negativo'
-    if (minimumStock < 0) return 'Estoque mínimo não pode ser negativo'
 
     return ''
   }
@@ -202,7 +200,7 @@ export default function NovoIngredientePage() {
           purchase_price: purchasePrice,
           cost_per_unit: costPerUnit,
           stock_quantity: stockQuantity,
-          minimum_stock: minimumStock,
+          stock_unit: form.stock_unit.trim() || form.usage_unit.trim(),
         },
       ])
 
@@ -385,21 +383,24 @@ export default function NovoIngredientePage() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="minimum_stock">
-                  Estoque mínimo
+                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="stock_unit">
+                  Unidade do estoque
                 </label>
                 <input
-                  id="minimum_stock"
-                  name="minimum_stock"
-                  type="number"
-                  min="0"
-                  step="0.001"
-                  inputMode="decimal"
-                  value={form.minimum_stock}
+                  id="stock_unit"
+                  name="stock_unit"
+                  type="text"
+                  list="stock-unit-options"
+                  value={form.stock_unit}
                   onChange={handleChange}
-                  placeholder="Ex: 100"
+                  placeholder="Ex: g, ml, unidade"
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 />
+                <datalist id="stock-unit-options">
+                  {useUnitSuggestions.map((unit) => (
+                    <option key={unit} value={unit} />
+                  ))}
+                </datalist>
               </div>
             </div>
           </section>

@@ -63,6 +63,39 @@ type SupplierOrderDetails = {
   parent_kit?: string
 }
 
+type CakeTopperSupplierOrderDetails = {
+  nome: string | null
+  idade: string | null
+  tema: string | null
+  foto_url: string | null
+}
+
+type Supplier = {
+  id: string
+  name: string
+}
+
+type CustomerOption = {
+  id: string
+  name: string
+  phone: string | null
+  balance: NumericValue
+}
+
+type CakeTopperForm = {
+  enabled: boolean
+  supplier_id: string
+  child_name: string
+  age: string
+  theme: string
+  photo_url: string
+  cost: string
+  charged_amount: string
+  notes: string
+}
+
+type CakeTopperField = Exclude<keyof CakeTopperForm, 'enabled'>
+
 type KitSubItem = {
   localId: string
   kit_item_id: string
@@ -104,6 +137,13 @@ type OrderProductItem = {
   kit_category_subitems: KitCategorySubItem[]
 }
 
+type OrderExtra = {
+  localId: string
+  name: string
+  amount: string
+  notes: string
+}
+
 type OrderForm = {
   customer_name: string
   customer_phone: string
@@ -120,6 +160,11 @@ type OrderForm = {
   remaining_payment_date: string
   address: string
   notes: string
+  fulfillment_type: 'retirada' | 'entrega'
+  delivery_fee: string
+  down_payment: string
+  discount_amount: string
+  manual_total: string
 }
 
 const statusOptions = [
@@ -155,6 +200,23 @@ const initialForm: OrderForm = {
   remaining_payment_date: '',
   address: '',
   notes: '',
+  fulfillment_type: 'retirada',
+  delivery_fee: '0',
+  down_payment: '',
+  discount_amount: '0',
+  manual_total: '',
+}
+
+const initialCakeTopperForm: CakeTopperForm = {
+  enabled: false,
+  supplier_id: '',
+  child_name: '',
+  age: '',
+  theme: '',
+  photo_url: '',
+  cost: '',
+  charged_amount: '',
+  notes: '',
 }
 
 function createLocalId() {
@@ -175,6 +237,11 @@ function parseNumericValue(value: NumericValue) {
 function optionalText(value: string) {
   const trimmedValue = value.trim()
   return trimmedValue || null
+}
+
+function optionalMoney(value: string) {
+  const trimmedValue = value.trim()
+  return trimmedValue ? parseDecimal(trimmedValue) : null
 }
 
 function formatCurrency(value: NumericValue) {
@@ -246,10 +313,14 @@ function buildCategoryChoiceNotes(category: string, notes: string) {
 
 export default function NovoPedidoPage() {
   const [form, setForm] = useState<OrderForm>(initialForm)
+  const [cakeTopper, setCakeTopper] = useState<CakeTopperForm>(initialCakeTopperForm)
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [customers, setCustomers] = useState<CustomerOption[]>([])
   const [kitItems, setKitItems] = useState<ProductKitItem[]>([])
   const [kitCategoryComponents, setKitCategoryComponents] = useState<KitCategoryComponent[]>([])
   const [orderItems, setOrderItems] = useState<OrderProductItem[]>([])
+  const [orderExtras, setOrderExtras] = useState<OrderExtra[]>([])
   const [images, setImages] = useState<File[]>([])
   const [isLoadingData, setIsLoadingData] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -308,8 +379,32 @@ export default function NovoPedidoPage() {
           throw kitCategoryComponentsError
         }
 
+        const { data: suppliersData, error: suppliersError } = await supabase
+          .from('suppliers')
+          .select('id, name')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (suppliersError) {
+          logSupabaseError('Erro Supabase suppliers:', suppliersError)
+          throw suppliersError
+        }
+
+        const { data: customersData, error: customersError } = await supabase
+          .from('customers')
+          .select('id, name, phone, balance')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (customersError) {
+          logSupabaseError('Erro Supabase customers:', customersError)
+          throw customersError
+        }
+
         if (isMounted) {
           setRecipes((recipesData ?? []) as Recipe[])
+          setSuppliers((suppliersData ?? []) as Supplier[])
+          setCustomers((customersData ?? []) as CustomerOption[])
           setKitItems((kitItemsData ?? []) as ProductKitItem[])
           setKitCategoryComponents(
             (kitCategoryComponentsData ?? []) as KitCategoryComponent[]
@@ -377,14 +472,33 @@ export default function NovoPedidoPage() {
     return groupedRecipes
   }, [recipes])
 
+  const selectedCustomer = useMemo(() => {
+    const customerName = form.customer_name.trim().toLowerCase()
+    if (!customerName) return null
+
+    return (
+      customers.find((customer) => customer.name.trim().toLowerCase() === customerName) ?? null
+    )
+  }, [customers, form.customer_name])
+
+  const selectedCustomerBalance = parseNumericValue(selectedCustomer?.balance)
+
   const orderTotal = useMemo(() => {
     return orderItems.reduce((sum, item) => {
       return sum + parseDecimal(item.quantity) * parseDecimal(item.unit_price)
     }, 0)
   }, [orderItems])
 
-  const depositValue = parseDecimal(form.deposit_value)
-  const remainingValue = Math.max(orderTotal - depositValue, 0)
+  const subtotalItems = orderTotal
+  const deliveryFee = parseDecimal(form.delivery_fee)
+  const extrasTotal = orderExtras.reduce((sum, extra) => sum + parseDecimal(extra.amount), 0)
+  const cakeTopperChargedAmount = cakeTopper.enabled ? parseDecimal(cakeTopper.charged_amount) : 0
+  const discount = parseDecimal(form.discount_amount)
+  const totalCalculated = subtotalItems + deliveryFee + extrasTotal + cakeTopperChargedAmount - discount
+  const finalTotal = form.manual_total ? parseDecimal(form.manual_total) : totalCalculated
+
+  const downPayment = parseDecimal(form.down_payment)
+  const remainingAmount = Math.max(finalTotal - downPayment, 0)
 
   function buildKitSubItems(recipeId: string) {
     const selectedKitItems = kitItemsByKitId.get(recipeId) ?? []
@@ -461,6 +575,18 @@ export default function NovoPedidoPage() {
 
     setForm((currentForm) => ({
       ...currentForm,
+      [field]: value,
+    }))
+  }
+
+  function handleCakeTopperChange(
+    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) {
+    const field = event.target.name as CakeTopperField
+    const value = event.target.value
+
+    setCakeTopper((currentCakeTopper) => ({
+      ...currentCakeTopper,
       [field]: value,
     }))
   }
@@ -847,6 +973,36 @@ export default function NovoPedidoPage() {
     setImages((currentImages) => currentImages.filter((_, currentIndex) => currentIndex !== index))
   }
 
+  function addOrderExtra() {
+    setOrderExtras((currentExtras) => [
+      ...currentExtras,
+      {
+        localId: createLocalId(),
+        name: '',
+        amount: '',
+        notes: '',
+      },
+    ])
+  }
+
+  function updateOrderExtra(
+    localId: string,
+    field: 'name' | 'amount' | 'notes',
+    value: string
+  ) {
+    setOrderExtras((currentExtras) =>
+      currentExtras.map((extra) =>
+        extra.localId === localId ? { ...extra, [field]: value } : extra
+      )
+    )
+  }
+
+  function removeOrderExtra(localId: string) {
+    setOrderExtras((currentExtras) =>
+      currentExtras.filter((extra) => extra.localId !== localId)
+    )
+  }
+
   function validateFlavorList(flavors: FlavorItem[]) {
     return flavors.every((flavor) => {
       const hasContent = flavor.name.trim() || flavor.quantity.trim()
@@ -884,11 +1040,10 @@ export default function NovoPedidoPage() {
 
   function validateForm() {
     if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
-    if (!form.delivery_date) return 'Data da festa/evento e obrigatoria'
     if (!form.delivery_time) return 'Horario de entrega e obrigatorio'
     if (orderItems.length === 0) return 'Adicione pelo menos um produto ao pedido'
-    if (orderTotal <= 0) return 'Total do pedido deve ser maior que zero'
-    if (depositValue < 0) return 'Valor do sinal nao pode ser negativo'
+    if (finalTotal <= 0) return 'Total do pedido deve ser maior que zero'
+    if (downPayment < 0) return 'Valor do sinal nao pode ser negativo'
 
     const invalidItem = orderItems.some((item) => {
       if (!item.recipe_id || parseDecimal(item.quantity) <= 0 || parseDecimal(item.unit_price) < 0) {
@@ -917,6 +1072,20 @@ export default function NovoPedidoPage() {
 
     if (kitCategoryError) return kitCategoryError
 
+    const invalidExtra = orderExtras.some(
+      (extra) => !extra.name.trim() || parseDecimal(extra.amount) < 0
+    )
+
+    if (invalidExtra) {
+      return 'Confira nome e valor de todos os acrescimos'
+    }
+
+    if (cakeTopper.enabled) {
+      if (parseDecimal(cakeTopper.cost) < 0 || parseDecimal(cakeTopper.charged_amount) < 0) {
+        return 'Custo e valor cobrado do topo de bolo nao podem ser negativos'
+      }
+    }
+
     return ''
   }
 
@@ -925,7 +1094,7 @@ export default function NovoPedidoPage() {
 
     for (const image of images) {
       try {
-        const filename = `${orderId}/${Date.now()}-${image.name}`
+        const filename = `${orderId}/${createLocalId()}-${image.name}`
         const { error: uploadError } = await supabase.storage
           .from('order-images')
           .upload(filename, image)
@@ -938,6 +1107,11 @@ export default function NovoPedidoPage() {
     }
 
     return uploadedPaths
+  }
+
+  function buildCakeTopperTitle(childName: string | null, theme: string | null) {
+    const titleDetail = childName || theme
+    return titleDetail ? `Topo de bolo - ${titleDetail}` : 'Topo de bolo'
   }
 
   async function createSupplierOrderForThirdPartyItem(params: {
@@ -985,6 +1159,73 @@ export default function NovoPedidoPage() {
       logSupabaseError('Erro Supabase supplier_orders insert:', supplierOrderError)
       throw new Error(
         'Falha ao gerar pedido para fornecedor. Verifique se a migration supplier_orders foi aplicada no Supabase.'
+      )
+    }
+  }
+
+  async function createCakeTopperForOrder(userId: string, orderId: string) {
+    if (!cakeTopper.enabled) return
+
+    const childName = optionalText(cakeTopper.child_name)
+    const age = optionalText(cakeTopper.age)
+    const theme = optionalText(cakeTopper.theme)
+    const photoUrl = optionalText(cakeTopper.photo_url)
+    const cost = optionalMoney(cakeTopper.cost)
+    const chargedAmount = optionalMoney(cakeTopper.charged_amount)
+    const notes = optionalText(cakeTopper.notes)
+    const supplierId = optionalText(cakeTopper.supplier_id)
+
+    const { error: cakeTopperError } = await supabase.from('order_cake_toppers').insert([
+      {
+        user_id: userId,
+        order_id: orderId,
+        supplier_id: supplierId,
+        child_name: childName,
+        age,
+        theme,
+        photo_url: photoUrl,
+        cost,
+        charged_amount: chargedAmount,
+        notes,
+      },
+    ])
+
+    if (cakeTopperError) {
+      logSupabaseError('Erro Supabase order_cake_toppers insert:', cakeTopperError)
+      throw new Error(
+        'Falha ao salvar topo de bolo. Verifique se a migration order_cake_toppers foi aplicada no Supabase.'
+      )
+    }
+
+    if (!supplierId) return
+
+    const details: CakeTopperSupplierOrderDetails = {
+      nome: childName,
+      idade: age,
+      tema: theme,
+      foto_url: photoUrl,
+    }
+
+    const { error: supplierOrderError } = await supabase.from('supplier_orders').insert([
+      {
+        user_id: userId,
+        supplier_id: supplierId,
+        customer_order_id: orderId,
+        title: buildCakeTopperTitle(childName, theme),
+        quantity: 1,
+        unit: 'unidade',
+        due_date: form.delivery_date || null,
+        status: 'pendente',
+        estimated_cost: cost,
+        details,
+        notes,
+      },
+    ])
+
+    if (supplierOrderError) {
+      logSupabaseError('Erro Supabase supplier_orders topo insert:', supplierOrderError)
+      throw new Error(
+        'Falha ao gerar pedido de topo para fornecedor. Verifique se a migration supplier_orders foi aplicada no Supabase.'
       )
     }
   }
@@ -1057,12 +1298,19 @@ export default function NovoPedidoPage() {
         user_id: currentUserId,
         customer_id: customerId,
         order_date: form.order_date,
-        delivery_date: form.delivery_date,
+        delivery_date: form.delivery_date || null,
         delivery_time: form.delivery_time,
-        total_value: orderTotal,
-        deposit_value: depositValue,
-        status: form.status || 'novo',
-        payment_status: depositValue > 0 ? 'partial' : 'pending',
+        total_value: finalTotal,
+        deposit_value: downPayment,
+        down_payment: downPayment,
+        fulfillment_type: form.fulfillment_type,
+        delivery_fee: deliveryFee,
+        discount_amount: discount,
+        extras_total: extrasTotal,
+        manual_total: form.manual_total ? parseDecimal(form.manual_total) : null,
+        remaining_payment_date: form.remaining_payment_date || null,
+        status: downPayment > 0 ? 'confirmado' : (form.status || 'novo'),
+        payment_status: downPayment > 0 ? 'partial' : 'pending',
         delivery_address: optionalText(form.address),
         notes: optionalText(form.notes || form.description),
       }
@@ -1233,22 +1481,40 @@ export default function NovoPedidoPage() {
         }
       }
 
+      if (orderExtras.length > 0) {
+        const extrasData = orderExtras.map((extra) => ({
+          user_id: currentUserId,
+          order_id: orderId,
+          name: extra.name.trim(),
+          amount: parseDecimal(extra.amount),
+          notes: optionalText(extra.notes),
+        }))
+
+        const { error: extrasError } = await supabase.from('order_extras').insert(extrasData)
+
+        if (extrasError) {
+          logSupabaseError('Aviso Supabase order_extras insert:', extrasError)
+        }
+      }
+
+      await createCakeTopperForOrder(currentUserId, orderId)
+
       const payments = []
 
-      if (depositValue > 0) {
+      if (downPayment > 0) {
         payments.push({
           order_id: orderId,
-          amount: depositValue,
+          amount: downPayment,
           method: form.payment_method,
           payment_date: form.deposit_payment_date || null,
           notes: 'Sinal',
         })
       }
 
-      if (remainingValue > 0) {
+      if (remainingAmount > 0) {
         payments.push({
           order_id: orderId,
-          amount: remainingValue,
+          amount: remainingAmount,
           method: form.remaining_payment_method,
           payment_date: form.remaining_payment_date || null,
           notes: 'Restante',
@@ -1325,11 +1591,22 @@ export default function NovoPedidoPage() {
                 <input
                   type="text"
                   name="customer_name"
+                  list="customer-options"
                   value={form.customer_name}
                   onChange={handleInputChange}
                   placeholder="Ex: Ana Silva"
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
+                <datalist id="customer-options">
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.name} />
+                  ))}
+                </datalist>
+                {selectedCustomerBalance > 0 && (
+                  <p className="mt-2 rounded-lg bg-[#F4FBF6] px-3 py-2 text-sm font-semibold text-[#1F7A3A]">
+                    Cliente tem {formatCurrency(selectedCustomerBalance)} de saldo disponivel.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#1A0A08]">Telefone</label>
@@ -1961,14 +2238,351 @@ export default function NovoPedidoPage() {
           </section>
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
-            <h2 className="mb-4 font-bold text-[#1A0A08]">Valores e pagamento</h2>
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Tipo de atendimento</h2>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((currentForm) => ({ ...currentForm, fulfillment_type: 'retirada' }))
+                }
+                className={`rounded-lg px-4 py-3 font-medium transition-colors ${
+                  form.fulfillment_type === 'retirada'
+                    ? 'bg-[#C0392B] text-white'
+                    : 'border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] text-[#1A0A08] hover:bg-white'
+                }`}
+              >
+                Retirada
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((currentForm) => ({ ...currentForm, fulfillment_type: 'entrega' }))
+                }
+                className={`rounded-lg px-4 py-3 font-medium transition-colors ${
+                  form.fulfillment_type === 'entrega'
+                    ? 'bg-[#C0392B] text-white'
+                    : 'border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] text-[#1A0A08] hover:bg-white'
+                }`}
+              >
+                Entrega
+              </button>
+            </div>
+
+            {form.fulfillment_type === 'entrega' && (
+              <div className="mt-4">
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Taxa de entrega
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  name="delivery_fee"
+                  value={form.delivery_fee}
+                  onChange={handleInputChange}
+                  placeholder="0.00"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <label className="flex cursor-pointer items-center gap-3">
+              <input
+                type="checkbox"
+                checked={cakeTopper.enabled}
+                onChange={(event) =>
+                  setCakeTopper((currentCakeTopper) => ({
+                    ...currentCakeTopper,
+                    enabled: event.target.checked,
+                  }))
+                }
+                className="h-5 w-5 rounded border-[rgba(26,10,8,0.18)] text-[#C0392B] focus:ring-[#C0392B]"
+              />
+              <span className="font-bold text-[#1A0A08]">Topo de bolo</span>
+            </label>
+
+            {cakeTopper.enabled && (
+              <div className="mt-4 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Fornecedor
+                    </label>
+                    <select
+                      name="supplier_id"
+                      value={cakeTopper.supplier_id}
+                      onChange={handleCakeTopperChange}
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    >
+                      <option value="">Sem fornecedor definido</option>
+                      {suppliers.map((supplier) => (
+                        <option key={supplier.id} value={supplier.id}>
+                          {supplier.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Nome
+                    </label>
+                    <input
+                      type="text"
+                      name="child_name"
+                      value={cakeTopper.child_name}
+                      onChange={handleCakeTopperChange}
+                      placeholder="Nome para o topo"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Idade
+                    </label>
+                    <input
+                      type="text"
+                      name="age"
+                      value={cakeTopper.age}
+                      onChange={handleCakeTopperChange}
+                      placeholder="Ex: 5 anos"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Tema
+                    </label>
+                    <input
+                      type="text"
+                      name="theme"
+                      value={cakeTopper.theme}
+                      onChange={handleCakeTopperChange}
+                      placeholder="Tema do topo"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      URL da foto
+                    </label>
+                    <input
+                      type="text"
+                      name="photo_url"
+                      value={cakeTopper.photo_url}
+                      onChange={handleCakeTopperChange}
+                      placeholder="https://..."
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Custo
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      name="cost"
+                      value={cakeTopper.cost}
+                      onChange={handleCakeTopperChange}
+                      placeholder="0.00"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Valor cobrado
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      name="charged_amount"
+                      value={cakeTopper.charged_amount}
+                      onChange={handleCakeTopperChange}
+                      placeholder="0.00"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Observacoes
+                    </label>
+                    <textarea
+                      name="notes"
+                      value={cakeTopper.notes}
+                      onChange={handleCakeTopperChange}
+                      rows={3}
+                      placeholder="Detalhes combinados com cliente ou fornecedor"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-bold text-[#1A0A08]">Acrescimos</h2>
+              <button
+                type="button"
+                onClick={addOrderExtra}
+                className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
+              >
+                <Plus size={16} aria-hidden="true" />
+                <span>Adicionar</span>
+              </button>
+            </div>
+
+            {orderExtras.length === 0 ? (
+              <p className="text-sm text-[#999999]">Sem acrescimos adicionados.</p>
+            ) : (
+              <div className="space-y-3">
+                {orderExtras.map((extra) => (
+                  <div
+                    key={extra.localId}
+                    className="grid grid-cols-1 gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-3 md:grid-cols-[minmax(0,1fr)_120px_40px]"
+                  >
+                    <input
+                      type="text"
+                      value={extra.name}
+                      onChange={(event) =>
+                        updateOrderExtra(extra.localId, 'name', event.target.value)
+                      }
+                      placeholder="Ex: glitter, pó decorativo..."
+                      className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={extra.amount}
+                      onChange={(event) =>
+                        updateOrderExtra(extra.localId, 'amount', event.target.value)
+                      }
+                      placeholder="0.00"
+                      className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeOrderExtra(extra.localId)}
+                      className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                      aria-label="Remover acrescimo"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                    </button>
+                    {extra.notes !== undefined && (
+                      <input
+                        type="text"
+                        value={extra.notes || ''}
+                        onChange={(event) =>
+                          updateOrderExtra(extra.localId, 'notes', event.target.value)
+                        }
+                        placeholder="Observacoes (opcional)"
+                        className="col-span-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Valores e calculo</h2>
+            <div className="space-y-4">
               <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-sm text-[#999999]">Valor total automatico</p>
-                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(orderTotal)}
+                <p className="text-sm text-[#999999]">Subtotal dos itens</p>
+                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">{formatCurrency(subtotalItems)}</p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                    Desconto
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    name="discount_amount"
+                    value={form.discount_amount}
+                    onChange={handleInputChange}
+                    placeholder="0.00"
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+
+                {form.fulfillment_type === 'entrega' && (
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-[#1A0A08]">Taxa de entrega</p>
+                    <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08]">
+                      {formatCurrency(deliveryFee)}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <p className="mb-2 text-sm font-medium text-[#1A0A08]">Acrescimos</p>
+                  <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08]">
+                    {formatCurrency(extrasTotal)}
+                  </div>
+                </div>
+
+                {cakeTopper.enabled && (
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-[#1A0A08]">Topo de bolo</p>
+                    <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08]">
+                      {formatCurrency(cakeTopperChargedAmount)}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-[#C9A84C] bg-[#FAF6F0] p-4">
+                <p className="text-sm text-[#999999]">Total calculado</p>
+                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">{formatCurrency(totalCalculated)}</p>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Total final manual (opcional)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  name="manual_total"
+                  value={form.manual_total}
+                  onChange={handleInputChange}
+                  placeholder={`Deixar vazio para usar ${formatCurrency(totalCalculated)}`}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                />
+                <p className="mt-1 text-xs text-[#999999]">
+                  Se preenchido, sobrescreve o total calculado
                 </p>
               </div>
+
+              <div className="rounded-lg border border-[#27AE60] bg-white p-4">
+                <p className="text-sm text-[#999999]">Total final do pedido</p>
+                <p className="mt-1 text-3xl font-bold text-[#1A0A08]">{formatCurrency(finalTotal)}</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Sinal e formas de pagamento</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
                   Valor do sinal
@@ -1977,8 +2591,8 @@ export default function NovoPedidoPage() {
                   type="number"
                   step="0.01"
                   min="0"
-                  name="deposit_value"
-                  value={form.deposit_value}
+                  name="down_payment"
+                  value={form.down_payment}
                   onChange={handleInputChange}
                   placeholder="0.00"
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
@@ -1987,7 +2601,7 @@ export default function NovoPedidoPage() {
               <div className="rounded-lg bg-[#FAF6F0] p-4">
                 <p className="text-sm text-[#999999]">Valor restante</p>
                 <p className="mt-1 text-xl font-bold text-[#1A0A08]">
-                  {formatCurrency(remainingValue)}
+                  {formatCurrency(remainingAmount)}
                 </p>
               </div>
               <div>
@@ -2009,6 +2623,18 @@ export default function NovoPedidoPage() {
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Data de recebimento do sinal
+                </label>
+                <input
+                  type="date"
+                  name="deposit_payment_date"
+                  value={form.deposit_payment_date}
+                  onChange={handleInputChange}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
                   Forma de pagamento do restante
                 </label>
                 <select
@@ -2023,18 +2649,6 @@ export default function NovoPedidoPage() {
                     </option>
                   ))}
                 </select>
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
-                  Data de recebimento do sinal
-                </label>
-                <input
-                  type="date"
-                  name="deposit_payment_date"
-                  value={form.deposit_payment_date}
-                  onChange={handleInputChange}
-                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
-                />
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#1A0A08]">

@@ -32,6 +32,25 @@ type OrderItem = {
   created_at?: string
 }
 
+type SupplierSummary = {
+  id: string
+  name: string
+}
+
+type OrderCakeTopper = {
+  id: string
+  supplier_id: string | null
+  child_name: string | null
+  age: string | null
+  theme: string | null
+  photo_url: string | null
+  cost: NumericValue
+  charged_amount: NumericValue
+  notes: string | null
+  created_at: string
+  suppliers?: SupplierSummary | SupplierSummary[] | null
+}
+
 type Order = {
   id: string
   customer_name?: string | null
@@ -43,6 +62,7 @@ type Order = {
   delivery_time: string
   total_value: NumericValue
   deposit_value: NumericValue
+  down_payment?: NumericValue
   remaining_value?: NumericValue
   status: string
   payment_method?: string | null
@@ -51,12 +71,19 @@ type Order = {
   notes: string | null
   image_paths?: string[]
   created_at: string
+  fulfillment_type?: string | null
+  delivery_fee?: NumericValue
+  discount_amount?: NumericValue
+  extras_total?: NumericValue
+  manual_total?: NumericValue
+  remaining_payment_date?: string | null
   customers?: {
     id: string
     name: string
     phone: string | null
   } | null
   order_items?: OrderItem[]
+  order_cake_toppers?: OrderCakeTopper[]
 }
 
 const statusOptions = [
@@ -137,6 +164,12 @@ function getPaymentLabel(method?: string | null) {
   }
 
   return labels[method] ?? method
+}
+
+function getCakeTopperSupplier(cakeTopper: OrderCakeTopper) {
+  const supplier = cakeTopper.suppliers
+
+  return Array.isArray(supplier) ? supplier[0] : supplier
 }
 
 function renderFlavors(flavors: FlavorDetail[] | null) {
@@ -228,6 +261,22 @@ export default function DetalhesPedidoPage() {
             flavor_details,
             notes,
             created_at
+          ),
+          order_cake_toppers (
+            id,
+            supplier_id,
+            child_name,
+            age,
+            theme,
+            photo_url,
+            cost,
+            charged_amount,
+            notes,
+            created_at,
+            suppliers (
+              id,
+              name
+            )
           )
         `)
         .eq('id', orderId)
@@ -260,6 +309,8 @@ export default function DetalhesPedidoPage() {
     const items = order?.order_items ?? []
     return items.filter((item) => !item.parent_order_item_id)
   }, [order])
+
+  const cakeToppers = order?.order_cake_toppers ?? []
 
   const childItemsByParentId = useMemo(() => {
     const groupedItems = new Map<string, OrderItem[]>()
@@ -537,6 +588,81 @@ export default function DetalhesPedidoPage() {
           )}
         </section>
 
+        {cakeToppers.length > 0 && (
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Topo de bolo</h2>
+            <div className="space-y-3">
+              {cakeToppers.map((cakeTopper) => {
+                const supplier = getCakeTopperSupplier(cakeTopper)
+
+                return (
+                  <article
+                    key={cakeTopper.id}
+                    className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                  >
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Fornecedor</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {supplier?.name || 'Nao informado'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Nome</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {cakeTopper.child_name || 'Nao informado'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Idade</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {cakeTopper.age || 'Nao informado'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Tema</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {cakeTopper.theme || 'Nao informado'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Custo</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {cakeTopper.cost == null ? 'Nao informado' : formatCurrency(cakeTopper.cost)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-sm text-[#999999]">Valor cobrado</p>
+                        <p className="font-medium text-[#1A0A08]">
+                          {cakeTopper.charged_amount == null
+                            ? 'Nao informado'
+                            : formatCurrency(cakeTopper.charged_amount)}
+                        </p>
+                      </div>
+                      {cakeTopper.photo_url && (
+                        <div className="md:col-span-2">
+                          <p className="mb-1 text-sm text-[#999999]">URL da foto</p>
+                          <p className="break-all font-medium text-[#1A0A08]">
+                            {cakeTopper.photo_url}
+                          </p>
+                        </div>
+                      )}
+                      {cakeTopper.notes && (
+                        <div className="md:col-span-2">
+                          <p className="mb-1 text-sm text-[#999999]">Observacoes</p>
+                          <p className="whitespace-pre-wrap text-[#1A0A08]">
+                            {cakeTopper.notes}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        )}
+
         <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
           <h2 className="mb-4 font-bold text-[#1A0A08]">Pagamento</h2>
           <div className="space-y-4">
@@ -548,16 +674,63 @@ export default function DetalhesPedidoPage() {
               <DollarSign size={32} className="text-[#C0392B]" aria-hidden="true" />
             </div>
 
+            {order.fulfillment_type && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Tipo de atendimento</p>
+                <p className="font-bold text-[#1A0A08]">
+                  {order.fulfillment_type === 'entrega' ? 'Entrega' : 'Retirada'}
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <div className="rounded-lg border border-[#C9A84C] p-4">
                 <p className="mb-1 text-sm text-[#999999]">Sinal pago</p>
-                <p className="font-bold text-[#C9A84C]">{formatCurrency(depositValue)}</p>
+                <p className="font-bold text-[#C9A84C]">
+                  {formatCurrency(
+                    parseNumericValue(order.down_payment ?? order.deposit_value)
+                  )}
+                </p>
               </div>
               <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
                 <p className="mb-1 text-sm text-[#999999]">Restante</p>
                 <p className="font-bold text-[#1A0A08]">{formatCurrency(remainingValue)}</p>
               </div>
             </div>
+
+            {order.remaining_payment_date && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Data de recebimento do restante</p>
+                <p className="font-medium text-[#1A0A08]">{formatDate(order.remaining_payment_date)}</p>
+              </div>
+            )}
+
+            {order.discount_amount && parseNumericValue(order.discount_amount) > 0 && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Desconto</p>
+                <p className="font-bold text-[#1A0A08]">
+                  -{formatCurrency(order.discount_amount)}
+                </p>
+              </div>
+            )}
+
+            {order.delivery_fee && order.fulfillment_type === 'entrega' && parseNumericValue(order.delivery_fee) > 0 && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Taxa de entrega</p>
+                <p className="font-bold text-[#1A0A08]">
+                  +{formatCurrency(order.delivery_fee)}
+                </p>
+              </div>
+            )}
+
+            {order.extras_total && parseNumericValue(order.extras_total) > 0 && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Acrescimos</p>
+                <p className="font-bold text-[#1A0A08]">
+                  +{formatCurrency(order.extras_total)}
+                </p>
+              </div>
+            )}
 
             <div>
               <p className="mb-1 text-sm text-[#999999]">Forma de pagamento</p>

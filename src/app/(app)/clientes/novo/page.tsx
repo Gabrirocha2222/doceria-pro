@@ -14,6 +14,9 @@ type CustomerForm = {
   birthday: string
   preferences: string
   notes: string
+  balance: string
+  satisfaction: '' | 'like' | 'dislike'
+  notes_private: string
 }
 
 const initialForm: CustomerForm = {
@@ -24,6 +27,9 @@ const initialForm: CustomerForm = {
   birthday: '',
   preferences: '',
   notes: '',
+  balance: '',
+  satisfaction: '',
+  notes_private: '',
 }
 
 function optionalText(value: string) {
@@ -35,6 +41,11 @@ function optionalDate(value: string) {
   return value || null
 }
 
+function parseDecimal(value: string) {
+  const parsed = Number(value.replace(',', '.'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 export default function NovaClientePage() {
   const [form, setForm] = useState<CustomerForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -42,7 +53,9 @@ export default function NovaClientePage() {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
-  function handleChange(event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
+  function handleChange(
+    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) {
     const field = event.target.name as keyof CustomerForm
 
     setForm((currentForm) => ({
@@ -57,6 +70,12 @@ export default function NovaClientePage() {
 
     if (!form.name.trim()) {
       setError('Nome da cliente é obrigatório')
+      return
+    }
+
+    const balance = parseDecimal(form.balance)
+    if (balance < 0) {
+      setError('Saldo inicial nao pode ser negativo')
       return
     }
 
@@ -82,6 +101,9 @@ export default function NovaClientePage() {
           birthday: optionalDate(form.birthday),
           preferences: optionalText(form.preferences),
           notes: optionalText(form.notes),
+          balance,
+          satisfaction: optionalText(form.satisfaction),
+          notes_private: optionalText(form.notes_private),
         },
       ])
 
@@ -219,6 +241,41 @@ export default function NovaClientePage() {
                 />
               </div>
 
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="balance">
+                  Saldo inicial
+                </label>
+                <input
+                  id="balance"
+                  name="balance"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={form.balance}
+                  onChange={handleChange}
+                  placeholder="0.00"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="satisfaction">
+                  Satisfacao
+                </label>
+                <select
+                  id="satisfaction"
+                  name="satisfaction"
+                  value={form.satisfaction}
+                  onChange={handleChange}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                >
+                  <option value="">Sem avaliacao</option>
+                  <option value="like">Like</option>
+                  <option value="dislike">Dislike</option>
+                </select>
+              </div>
+
               <div className="md:col-span-2">
                 <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="notes">
                   Observações
@@ -230,6 +287,24 @@ export default function NovaClientePage() {
                   onChange={handleChange}
                   placeholder="Anotações importantes sobre atendimento, entregas ou pedidos..."
                   rows={5}
+                  className="w-full resize-none rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="notes_private"
+                >
+                  Observacoes internas
+                </label>
+                <textarea
+                  id="notes_private"
+                  name="notes_private"
+                  value={form.notes_private}
+                  onChange={handleChange}
+                  placeholder="Notas privadas sobre relacionamento, combinados ou atendimento..."
+                  rows={4}
                   className="w-full resize-none rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>

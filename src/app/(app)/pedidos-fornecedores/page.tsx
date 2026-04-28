@@ -22,6 +22,14 @@ type FlavorDetail = {
   quantity: NumericValue
 }
 
+type CakeTopperDetails = {
+  childName: string | null
+  age: string | null
+  theme: string | null
+  photoUrl: string | null
+  cost: NumericValue
+}
+
 type SupplierOrder = {
   id: string
   supplier_id: string | null
@@ -147,6 +155,41 @@ function readFlavorDetails(details: JsonValue | null): FlavorDetail[] {
       return { name, quantity }
     })
     .filter((flavor): flavor is FlavorDetail => flavor !== null)
+}
+
+function hasDetailKey(record: { [key: string]: JsonValue }, keys: string[]) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(record, key))
+}
+
+function readStringDetail(record: { [key: string]: JsonValue }, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+
+  return null
+}
+
+function readCakeTopperDetails(order: SupplierOrder): CakeTopperDetails | null {
+  const details = isRecord(order.details) ? order.details : null
+  const childName = details ? readStringDetail(details, ['nome', 'child_name']) : null
+  const age = details ? readStringDetail(details, ['idade', 'age']) : null
+  const theme = details ? readStringDetail(details, ['tema', 'theme']) : null
+  const photoUrl = details ? readStringDetail(details, ['foto_url', 'photo_url']) : null
+  const hasCakeTopperKey = details
+    ? hasDetailKey(details, ['nome', 'child_name', 'idade', 'age', 'tema', 'theme', 'foto_url', 'photo_url'])
+    : false
+  const hasCakeTopperTitle = order.title.trim().toLowerCase().startsWith('topo de bolo')
+
+  if (!hasCakeTopperTitle && !hasCakeTopperKey) return null
+
+  return {
+    childName,
+    age,
+    theme,
+    photoUrl,
+    cost: order.estimated_cost,
+  }
 }
 
 function getCustomer(customerOrder: CustomerOrder | undefined) {
@@ -292,6 +335,7 @@ export default function PedidosFornecedoresPage() {
         ? customerOrdersById[order.customer_order_id]
         : undefined
       const customerName = getCustomer(customerOrder)?.name ?? ''
+      const cakeTopperDetails = readCakeTopperDetails(order)
 
       if (selectedStatus !== 'todos' && order.status !== selectedStatus) return false
       if (selectedSupplierId !== 'todos' && order.supplier_id !== selectedSupplierId) return false
@@ -301,7 +345,9 @@ export default function PedidosFornecedoresPage() {
       return (
         order.title.toLowerCase().includes(query) ||
         supplier?.name.toLowerCase().includes(query) ||
-        customerName.toLowerCase().includes(query)
+        customerName.toLowerCase().includes(query) ||
+        Boolean(cakeTopperDetails?.childName?.toLowerCase().includes(query)) ||
+        Boolean(cakeTopperDetails?.theme?.toLowerCase().includes(query))
       )
     })
   }, [
@@ -450,6 +496,7 @@ export default function PedidosFornecedoresPage() {
                 : undefined
               const customer = getCustomer(customerOrder)
               const flavors = readFlavorDetails(order.details)
+              const cakeTopperDetails = readCakeTopperDetails(order)
 
               return (
                 <article
@@ -526,6 +573,50 @@ export default function PedidosFornecedoresPage() {
                             </span>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {cakeTopperDetails && (
+                    <div className="mt-3 rounded-lg bg-[#FAF6F0] p-3">
+                      <p className="mb-2 text-xs font-semibold text-[#999999]">
+                        Topo de bolo
+                      </p>
+                      <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+                        <div>
+                          <p className="text-xs text-[#999999]">Nome</p>
+                          <p className="font-semibold text-[#1A0A08]">
+                            {cakeTopperDetails.childName || 'Nao informado'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-[#999999]">Idade</p>
+                          <p className="font-semibold text-[#1A0A08]">
+                            {cakeTopperDetails.age || 'Nao informado'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-[#999999]">Tema</p>
+                          <p className="font-semibold text-[#1A0A08]">
+                            {cakeTopperDetails.theme || 'Nao informado'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-[#999999]">Custo</p>
+                          <p className="font-semibold text-[#1A0A08]">
+                            {cakeTopperDetails.cost == null
+                              ? 'Nao informado'
+                              : formatCurrency(cakeTopperDetails.cost)}
+                          </p>
+                        </div>
+                        {cakeTopperDetails.photoUrl && (
+                          <div className="sm:col-span-2">
+                            <p className="text-xs text-[#999999]">URL da foto</p>
+                            <p className="break-all font-semibold text-[#1A0A08]">
+                              {cakeTopperDetails.photoUrl}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}

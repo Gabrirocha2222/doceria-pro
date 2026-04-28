@@ -2,8 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, Boxes, Plus, Search } from 'lucide-react'
+import { AlertTriangle, Boxes, Edit3, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
 
 type Packaging = {
   id: string
@@ -18,6 +25,18 @@ type Packaging = {
   capacity_unit: string | null
   notes: string | null
   created_at?: string
+}
+
+type PackagingEditForm = {
+  name: string
+  category: string
+  package_quantity: string
+  unit: string
+  package_cost: string
+  cost_per_unit: string
+  capacity: string
+  capacity_unit: string
+  notes: string
 }
 
 const categoryOptions = ['Forminha', 'Caixa', 'Saco', 'Bandeja', 'Transporte', 'Outro']
@@ -51,6 +70,38 @@ function getCategoryLabel(category: string | null) {
   return category?.trim() || 'Sem categoria'
 }
 
+function optionalText(value: string) {
+  const trimmedValue = value.trim()
+  return trimmedValue || null
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+    fullError: error,
+  })
+}
+
+function buildEditForm(packaging: Packaging): PackagingEditForm {
+  return {
+    name: packaging.name,
+    category: packaging.category ?? '',
+    package_quantity: String(packaging.package_quantity ?? ''),
+    unit: packaging.unit ?? '',
+    package_cost: String(packaging.package_cost ?? ''),
+    cost_per_unit: String(packaging.cost_per_unit ?? ''),
+    capacity: String(packaging.capacity ?? ''),
+    capacity_unit: packaging.capacity_unit ?? '',
+    notes: packaging.notes ?? '',
+  }
+}
+
 function formatCapacity(packaging: Packaging) {
   const capacity = parseNumeric(packaging.capacity)
 
@@ -63,6 +114,10 @@ export default function EmbalagensPage() {
   const [packagingItems, setPackagingItems] = useState<Packaging[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('todas')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<PackagingEditForm | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const supabase = useMemo(() => createClient(), [])
@@ -96,7 +151,7 @@ export default function EmbalagensPage() {
           setPackagingItems((data ?? []) as Packaging[])
         }
       } catch (err) {
-        console.error('Erro ao carregar embalagens:', err)
+        logSupabaseError('Erro ao carregar embalagens:', err)
         if (isMounted) {
           setError('Falha ao carregar embalagens')
         }
@@ -139,6 +194,122 @@ export default function EmbalagensPage() {
       return matchesSearch && matchesCategory
     })
   }, [categoryFilter, packagingItems, searchQuery])
+
+  function startEdit(packaging: Packaging) {
+    setEditingId(packaging.id)
+    setEditForm(buildEditForm(packaging))
+    setError('')
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditForm(null)
+    setError('')
+  }
+
+  function updateEditForm(field: keyof PackagingEditForm, value: string) {
+    setEditForm((currentForm) =>
+      currentForm ? { ...currentForm, [field]: value } : currentForm
+    )
+  }
+
+  async function savePackaging(packaging: Packaging) {
+    if (!editForm) return
+
+    if (!editForm.name.trim()) {
+      setError('Nome da embalagem e obrigatorio')
+      return
+    }
+
+    setSavingId(packaging.id)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const updatedPackaging = {
+        name: editForm.name.trim(),
+        category: optionalText(editForm.category),
+        package_quantity: parseNumeric(editForm.package_quantity),
+        unit: editForm.unit.trim() || 'unidade',
+        package_cost: parseNumeric(editForm.package_cost),
+        cost_per_unit: parseNumeric(editForm.cost_per_unit),
+        capacity: editForm.capacity.trim() ? parseNumeric(editForm.capacity) : null,
+        capacity_unit: optionalText(editForm.capacity_unit),
+        notes: optionalText(editForm.notes),
+      }
+
+      const { error: updateError } = await supabase
+        .from('packaging')
+        .update(updatedPackaging)
+        .eq('id', packaging.id)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        logSupabaseError('Erro Supabase packaging update:', updateError)
+        throw updateError
+      }
+
+      setPackagingItems((currentItems) =>
+        currentItems.map((currentItem) =>
+          currentItem.id === packaging.id ? { ...currentItem, ...updatedPackaging } : currentItem
+        )
+      )
+      setEditingId(null)
+      setEditForm(null)
+    } catch (err) {
+      logSupabaseError('Erro ao editar embalagem:', err)
+      setError('Falha ao editar embalagem')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  async function deletePackaging(packaging: Packaging) {
+    const confirmed = window.confirm(`Excluir a embalagem "${packaging.name}"?`)
+    if (!confirmed) return
+
+    setDeletingId(packaging.id)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const { error: deleteError } = await supabase
+        .from('packaging')
+        .delete()
+        .eq('id', packaging.id)
+        .eq('user_id', user.id)
+
+      if (deleteError) {
+        logSupabaseError('Erro Supabase packaging delete:', deleteError)
+        throw deleteError
+      }
+
+      setPackagingItems((currentItems) =>
+        currentItems.filter((currentItem) => currentItem.id !== packaging.id)
+      )
+    } catch (err) {
+      logSupabaseError('Erro ao deletar embalagem:', err)
+      setError('Falha ao deletar embalagem')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <div className="w-full pb-28 lg:pb-8">
@@ -245,6 +416,7 @@ export default function EmbalagensPage() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredPackaging.map((item) => {
               const capacity = formatCapacity(item)
+              const currentEditForm = editingId === item.id ? editForm : null
 
               return (
                 <article
@@ -265,6 +437,86 @@ export default function EmbalagensPage() {
                       <Boxes size={21} aria-hidden="true" />
                     </div>
                   </div>
+
+                  {currentEditForm && (
+                    <div className="mb-4 grid grid-cols-1 gap-3">
+                      <input
+                        type="text"
+                        value={currentEditForm.name}
+                        onChange={(event) => updateEditForm('name', event.target.value)}
+                        placeholder="Nome"
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          type="text"
+                          value={currentEditForm.category}
+                          onChange={(event) => updateEditForm('category', event.target.value)}
+                          placeholder="Categoria"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.unit}
+                          onChange={(event) => updateEditForm('unit', event.target.value)}
+                          placeholder="Unidade"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={currentEditForm.package_quantity}
+                          onChange={(event) =>
+                            updateEditForm('package_quantity', event.target.value)
+                          }
+                          placeholder="Qtd. pacote"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={currentEditForm.package_cost}
+                          onChange={(event) => updateEditForm('package_cost', event.target.value)}
+                          placeholder="Custo pacote"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.0001"
+                          value={currentEditForm.cost_per_unit}
+                          onChange={(event) => updateEditForm('cost_per_unit', event.target.value)}
+                          placeholder="Custo unidade"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={currentEditForm.capacity}
+                          onChange={(event) => updateEditForm('capacity', event.target.value)}
+                          placeholder="Capacidade"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.capacity_unit}
+                          onChange={(event) => updateEditForm('capacity_unit', event.target.value)}
+                          placeholder="Unidade capacidade"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.notes}
+                          onChange={(event) => updateEditForm('notes', event.target.value)}
+                          placeholder="Observacoes"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mb-4 rounded-lg bg-[#FAF6F0] p-3">
                     <p className="text-xs font-medium text-[#999999]">Custo por unidade</p>
@@ -305,6 +557,48 @@ export default function EmbalagensPage() {
                         </p>
                       </div>
                     )}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {currentEditForm ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => savePackaging(item)}
+                          disabled={savingId === item.id}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#C0392B] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Save size={16} aria-hidden="true" />
+                          <span>Salvar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                        >
+                          <X size={16} aria-hidden="true" />
+                          <span>Cancelar</span>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(item)}
+                        className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                      >
+                        <Edit3 size={16} aria-hidden="true" />
+                        <span>Editar</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => deletePackaging(item)}
+                      disabled={deletingId === item.id}
+                      className="inline-flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                      <span>Excluir</span>
+                    </button>
                   </div>
                 </article>
               )

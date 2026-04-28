@@ -2,8 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, Package, Plus, Search } from 'lucide-react'
+import { AlertTriangle, Edit3, Package, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
 
 interface Ingredient {
   id: string
@@ -15,9 +22,21 @@ interface Ingredient {
   usage_unit: string | null
   cost_per_unit: number | null
   stock_quantity: number | null
-  minimum_stock: number | null
+  stock_unit: string | null
   user_id: string
   created_at: string
+}
+
+type IngredientEditForm = {
+  name: string
+  category: string
+  purchase_unit: string
+  purchase_quantity: string
+  purchase_price: string
+  usage_unit: string
+  cost_per_unit: string
+  stock_quantity: string
+  stock_unit: string
 }
 
 const categoryLabels: Record<string, string> = {
@@ -34,6 +53,11 @@ const categoryLabels: Record<string, string> = {
   outros: 'Outros',
 }
 
+function parseDecimal(value: string) {
+  const parsed = Number(value.replace(',', '.'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 function formatCurrency(value: number | null | undefined) {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -46,13 +70,45 @@ function getCategoryLabel(category: string | null) {
   return categoryLabels[category] ?? category
 }
 
-function isLowStock(ingredient: Ingredient) {
-  return (ingredient.stock_quantity ?? 0) <= (ingredient.minimum_stock ?? 0)
+function optionalText(value: string) {
+  const trimmedValue = value.trim()
+  return trimmedValue || null
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+    fullError: error,
+  })
+}
+
+function buildEditForm(ingredient: Ingredient): IngredientEditForm {
+  return {
+    name: ingredient.name,
+    category: ingredient.category ?? '',
+    purchase_unit: ingredient.purchase_unit ?? '',
+    purchase_quantity: String(ingredient.purchase_quantity ?? ''),
+    purchase_price: String(ingredient.purchase_price ?? ''),
+    usage_unit: ingredient.usage_unit ?? '',
+    cost_per_unit: String(ingredient.cost_per_unit ?? ''),
+    stock_quantity: String(ingredient.stock_quantity ?? ''),
+    stock_unit: ingredient.stock_unit ?? '',
+  }
 }
 
 export default function IngredientesPage() {
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
   const [searchQuery, setSearchQuery] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<IngredientEditForm | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const supabase = useMemo(() => createClient(), [])
@@ -86,7 +142,7 @@ export default function IngredientesPage() {
           setIngredients((data ?? []) as Ingredient[])
         }
       } catch (err) {
-        console.error('Erro ao carregar ingredientes:', err)
+        logSupabaseError('Erro ao carregar ingredientes:', err)
         if (isMounted) {
           setError('Falha ao carregar ingredientes')
         }
@@ -113,6 +169,124 @@ export default function IngredientesPage() {
       ingredient.name.toLowerCase().includes(query)
     )
   }, [ingredients, searchQuery])
+
+  function startEdit(ingredient: Ingredient) {
+    setEditingId(ingredient.id)
+    setEditForm(buildEditForm(ingredient))
+    setError('')
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditForm(null)
+    setError('')
+  }
+
+  function updateEditForm(field: keyof IngredientEditForm, value: string) {
+    setEditForm((currentForm) =>
+      currentForm ? { ...currentForm, [field]: value } : currentForm
+    )
+  }
+
+  async function saveIngredient(ingredient: Ingredient) {
+    if (!editForm) return
+
+    if (!editForm.name.trim()) {
+      setError('Nome do ingrediente e obrigatorio')
+      return
+    }
+
+    setSavingId(ingredient.id)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const updatedIngredient = {
+        name: editForm.name.trim(),
+        category: optionalText(editForm.category),
+        purchase_unit: optionalText(editForm.purchase_unit),
+        purchase_quantity: parseDecimal(editForm.purchase_quantity),
+        purchase_price: parseDecimal(editForm.purchase_price),
+        usage_unit: optionalText(editForm.usage_unit),
+        cost_per_unit: parseDecimal(editForm.cost_per_unit),
+        stock_quantity: parseDecimal(editForm.stock_quantity),
+        stock_unit: optionalText(editForm.stock_unit),
+      }
+
+      const { error: updateError } = await supabase
+        .from('ingredients')
+        .update(updatedIngredient)
+        .eq('id', ingredient.id)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        logSupabaseError('Erro Supabase ingredients update:', updateError)
+        throw updateError
+      }
+
+      setIngredients((currentIngredients) =>
+        currentIngredients.map((currentIngredient) =>
+          currentIngredient.id === ingredient.id
+            ? { ...currentIngredient, ...updatedIngredient }
+            : currentIngredient
+        )
+      )
+      setEditingId(null)
+      setEditForm(null)
+    } catch (err) {
+      logSupabaseError('Erro ao editar ingrediente:', err)
+      setError('Falha ao editar ingrediente')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  async function deleteIngredient(ingredient: Ingredient) {
+    const confirmed = window.confirm(`Excluir o ingrediente "${ingredient.name}"?`)
+    if (!confirmed) return
+
+    setDeletingId(ingredient.id)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const { error: deleteError } = await supabase
+        .from('ingredients')
+        .delete()
+        .eq('id', ingredient.id)
+        .eq('user_id', user.id)
+
+      if (deleteError) {
+        logSupabaseError('Erro Supabase ingredients delete:', deleteError)
+        throw deleteError
+      }
+
+      setIngredients((currentIngredients) =>
+        currentIngredients.filter((currentIngredient) => currentIngredient.id !== ingredient.id)
+      )
+    } catch (err) {
+      logSupabaseError('Erro ao deletar ingrediente:', err)
+      setError('Falha ao deletar ingrediente')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <div className="w-full pb-28 lg:pb-8">
@@ -193,8 +367,9 @@ export default function IngredientesPage() {
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredIngredients.map((ingredient) => {
-              const lowStock = isLowStock(ingredient)
               const usageUnit = ingredient.usage_unit || 'un.'
+              const stockUnit = ingredient.stock_unit || usageUnit
+              const currentEditForm = editingId === ingredient.id ? editForm : null
 
               return (
                 <article
@@ -211,12 +386,90 @@ export default function IngredientesPage() {
                       </p>
                     </div>
 
-                    {lowStock && (
-                      <span className="inline-flex shrink-0 items-center rounded-full bg-red-50 px-2.5 py-1 text-xs font-bold text-[#C0392B]">
-                        Estoque baixo
-                      </span>
-                    )}
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-bold text-[#1A0A08]">
+                      {ingredient.stock_quantity ?? 0} {stockUnit}
+                    </span>
                   </div>
+
+                  {currentEditForm ? (
+                    <div className="mb-4 grid grid-cols-1 gap-3">
+                      <input
+                        type="text"
+                        value={currentEditForm.name}
+                        onChange={(event) => updateEditForm('name', event.target.value)}
+                        placeholder="Nome"
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          type="text"
+                          value={currentEditForm.category}
+                          onChange={(event) => updateEditForm('category', event.target.value)}
+                          placeholder="Categoria"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.usage_unit}
+                          onChange={(event) => updateEditForm('usage_unit', event.target.value)}
+                          placeholder="Unidade de uso"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.purchase_unit}
+                          onChange={(event) => updateEditForm('purchase_unit', event.target.value)}
+                          placeholder="Unidade de compra"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={currentEditForm.purchase_quantity}
+                          onChange={(event) =>
+                            updateEditForm('purchase_quantity', event.target.value)
+                          }
+                          placeholder="Qtd. compra"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={currentEditForm.purchase_price}
+                          onChange={(event) => updateEditForm('purchase_price', event.target.value)}
+                          placeholder="Preco compra"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.0001"
+                          value={currentEditForm.cost_per_unit}
+                          onChange={(event) => updateEditForm('cost_per_unit', event.target.value)}
+                          placeholder="Custo por unidade"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={currentEditForm.stock_quantity}
+                          onChange={(event) => updateEditForm('stock_quantity', event.target.value)}
+                          placeholder="Estoque"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.stock_unit}
+                          onChange={(event) => updateEditForm('stock_unit', event.target.value)}
+                          placeholder="Unidade estoque"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="space-y-3 text-sm">
                     <div className="rounded-lg bg-[#FAF6F0] p-3">
@@ -231,20 +484,56 @@ export default function IngredientesPage() {
                       </p>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3">
                       <div>
                         <p className="text-xs font-medium text-[#999999]">Estoque atual</p>
-                        <p className={`mt-1 font-bold ${lowStock ? 'text-[#C0392B]' : 'text-[#1A0A08]'}`}>
-                          {ingredient.stock_quantity ?? 0} {usageUnit}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs font-medium text-[#999999]">Estoque mínimo</p>
                         <p className="mt-1 font-bold text-[#1A0A08]">
-                          {ingredient.minimum_stock ?? 0} {usageUnit}
+                          {ingredient.stock_quantity ?? 0} {stockUnit}
                         </p>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {currentEditForm ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => saveIngredient(ingredient)}
+                          disabled={savingId === ingredient.id}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#C0392B] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Save size={16} aria-hidden="true" />
+                          <span>Salvar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                        >
+                          <X size={16} aria-hidden="true" />
+                          <span>Cancelar</span>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(ingredient)}
+                        className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                      >
+                        <Edit3 size={16} aria-hidden="true" />
+                        <span>Editar</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => deleteIngredient(ingredient)}
+                      disabled={deletingId === ingredient.id}
+                      className="inline-flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                      <span>Excluir</span>
+                    </button>
                   </div>
                 </article>
               )

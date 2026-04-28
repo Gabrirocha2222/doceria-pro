@@ -4,16 +4,26 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   AlertTriangle,
+  Edit3,
   MapPin,
   MessageCircle,
   PackageSearch,
   Phone,
   Plus,
+  Save,
   Search,
   StickyNote,
   Trash2,
+  X,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
 
 interface Supplier {
   id: string
@@ -24,6 +34,14 @@ interface Supplier {
   address: string | null
   notes: string | null
   created_at?: string
+}
+
+type SupplierEditForm = {
+  name: string
+  phone: string
+  whatsapp: string
+  address: string
+  notes: string
 }
 
 function onlyDigits(value: string) {
@@ -39,10 +57,41 @@ function getWhatsAppHref(whatsapp: string | null) {
   return `https://wa.me/${digits}`
 }
 
+function optionalText(value: string) {
+  const trimmedValue = value.trim()
+  return trimmedValue || null
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+    fullError: error,
+  })
+}
+
+function buildEditForm(supplier: Supplier): SupplierEditForm {
+  return {
+    name: supplier.name,
+    phone: supplier.phone ?? '',
+    whatsapp: supplier.whatsapp ?? '',
+    address: supplier.address ?? '',
+    notes: supplier.notes ?? '',
+  }
+}
+
 export default function FornecedoresPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<SupplierEditForm | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const supabase = useMemo(() => createClient(), [])
@@ -76,7 +125,7 @@ export default function FornecedoresPage() {
           setSuppliers((data ?? []) as Supplier[])
         }
       } catch (err) {
-        console.error('Erro ao carregar fornecedores:', err)
+        logSupabaseError('Erro ao carregar fornecedores:', err)
         if (isMounted) {
           setError('Falha ao carregar fornecedores')
         }
@@ -104,8 +153,83 @@ export default function FornecedoresPage() {
     )
   }, [searchQuery, suppliers])
 
+  function startEdit(supplier: Supplier) {
+    setEditingId(supplier.id)
+    setEditForm(buildEditForm(supplier))
+    setError('')
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditForm(null)
+    setError('')
+  }
+
+  function updateEditForm(field: keyof SupplierEditForm, value: string) {
+    setEditForm((currentForm) =>
+      currentForm ? { ...currentForm, [field]: value } : currentForm
+    )
+  }
+
+  async function saveSupplier(supplier: Supplier) {
+    if (!editForm) return
+
+    if (!editForm.name.trim()) {
+      setError('Nome do fornecedor e obrigatorio')
+      return
+    }
+
+    setSavingId(supplier.id)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const updatedSupplier = {
+        name: editForm.name.trim(),
+        phone: optionalText(editForm.phone),
+        whatsapp: optionalText(editForm.whatsapp),
+        address: optionalText(editForm.address),
+        notes: optionalText(editForm.notes),
+      }
+
+      const { error: updateError } = await supabase
+        .from('suppliers')
+        .update(updatedSupplier)
+        .eq('id', supplier.id)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        logSupabaseError('Erro Supabase suppliers update:', updateError)
+        throw updateError
+      }
+
+      setSuppliers((currentSuppliers) =>
+        currentSuppliers.map((currentSupplier) =>
+          currentSupplier.id === supplier.id
+            ? { ...currentSupplier, ...updatedSupplier }
+            : currentSupplier
+        )
+      )
+      setEditingId(null)
+      setEditForm(null)
+    } catch (err) {
+      logSupabaseError('Erro ao editar fornecedor:', err)
+      setError('Falha ao editar fornecedor')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
   async function deleteSupplier(supplier: Supplier) {
-    const confirmed = confirm(`Excluir o fornecedor "${supplier.name}"?`)
+    const confirmed = window.confirm(`Excluir o fornecedor "${supplier.name}"?`)
     if (!confirmed) return
 
     setDeletingId(supplier.id)
@@ -127,13 +251,16 @@ export default function FornecedoresPage() {
         .eq('id', supplier.id)
         .eq('user_id', user.id)
 
-      if (deleteError) throw deleteError
+      if (deleteError) {
+        logSupabaseError('Erro Supabase suppliers delete:', deleteError)
+        throw deleteError
+      }
 
       setSuppliers((currentSuppliers) =>
         currentSuppliers.filter((currentSupplier) => currentSupplier.id !== supplier.id)
       )
     } catch (err) {
-      console.error('Erro ao deletar fornecedor:', err)
+      logSupabaseError('Erro ao deletar fornecedor:', err)
       setError('Falha ao deletar fornecedor')
     } finally {
       setDeletingId(null)
@@ -220,6 +347,7 @@ export default function FornecedoresPage() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredSuppliers.map((supplier) => {
               const whatsappHref = getWhatsAppHref(supplier.whatsapp)
+              const currentEditForm = editingId === supplier.id ? editForm : null
 
               return (
                 <article
@@ -246,6 +374,48 @@ export default function FornecedoresPage() {
                       <Trash2 size={18} aria-hidden="true" />
                     </button>
                   </div>
+
+                  {currentEditForm && (
+                    <div className="mb-4 grid grid-cols-1 gap-2">
+                      <input
+                        type="text"
+                        value={currentEditForm.name}
+                        onChange={(event) => updateEditForm('name', event.target.value)}
+                        placeholder="Nome"
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          type="text"
+                          value={currentEditForm.phone}
+                          onChange={(event) => updateEditForm('phone', event.target.value)}
+                          placeholder="Telefone"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <input
+                          type="text"
+                          value={currentEditForm.whatsapp}
+                          onChange={(event) => updateEditForm('whatsapp', event.target.value)}
+                          placeholder="WhatsApp"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        value={currentEditForm.address}
+                        onChange={(event) => updateEditForm('address', event.target.value)}
+                        placeholder="Endereco"
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                      <input
+                        type="text"
+                        value={currentEditForm.notes}
+                        onChange={(event) => updateEditForm('notes', event.target.value)}
+                        placeholder="Observacoes"
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      />
+                    </div>
+                  )}
 
                   <div className="space-y-3 text-sm">
                     <div className="flex items-start gap-3 rounded-lg bg-[#FAF6F0] p-3">
@@ -296,6 +466,48 @@ export default function FornecedoresPage() {
                         </p>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {currentEditForm ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => saveSupplier(supplier)}
+                          disabled={savingId === supplier.id}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#C0392B] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Save size={16} aria-hidden="true" />
+                          <span>Salvar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                        >
+                          <X size={16} aria-hidden="true" />
+                          <span>Cancelar</span>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(supplier)}
+                        className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                      >
+                        <Edit3 size={16} aria-hidden="true" />
+                        <span>Editar</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => deleteSupplier(supplier)}
+                      disabled={deletingId === supplier.id}
+                      className="inline-flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                      <span>Excluir</span>
+                    </button>
                   </div>
                 </article>
               )

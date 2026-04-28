@@ -1,12 +1,13 @@
 'use client'
 
-import type { ChangeEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   AlertTriangle,
+  Check,
   Clipboard,
   ClipboardCheck,
+  PackageCheck,
   PackageSearch,
   RefreshCcw,
   ShoppingCart,
@@ -14,20 +15,27 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
+type NumericValue = number | string | null | undefined
+type ProductType = 'simples' | 'kit'
+type ShoppingMode = 'recipes' | 'selected_orders' | 'week' | 'month'
+type PurchaseKind = 'ingredient' | 'packaging'
+type PackagingUsageType = 'unitaria' | 'transporte'
+
 type Recipe = {
   id: string
   user_id: string
   name: string
   category: string | null
-  yield_amount: number | string | null
+  yield_amount: NumericValue
   yield_unit: string | null
+  product_type: ProductType | null
   is_third_party: boolean | null
 }
 
 type RecipeIngredient = {
   recipe_id: string
   ingredient_id: string
-  quantity: number | string | null
+  quantity: NumericValue
   unit: string | null
 }
 
@@ -35,8 +43,52 @@ type Ingredient = {
   id: string
   user_id: string
   name: string
+  category: string | null
   usage_unit: string | null
-  cost_per_unit: number | string | null
+  cost_per_unit: NumericValue
+  stock_quantity: NumericValue
+  stock_unit: string | null
+}
+
+type RecipePackaging = {
+  recipe_id: string
+  packaging_id: string
+  quantity_per_recipe_unit: NumericValue
+  usage_type: PackagingUsageType
+}
+
+type Packaging = {
+  id: string
+  user_id: string
+  name: string
+  category: string | null
+  unit: string | null
+  cost_per_unit: NumericValue
+  capacity: NumericValue
+  capacity_unit: string | null
+}
+
+type CustomerSummary = {
+  name: string | null
+}
+
+type OrderItem = {
+  id: string
+  order_id: string
+  recipe_id: string | null
+  parent_order_item_id: string | null
+  item_name: string
+  quantity: NumericValue
+}
+
+type Order = {
+  id: string
+  user_id: string
+  delivery_date: string | null
+  delivery_time: string | null
+  status: string | null
+  customers?: CustomerSummary | CustomerSummary[] | null
+  order_items?: OrderItem[]
 }
 
 type UnitDefinition = {
@@ -44,13 +96,50 @@ type UnitDefinition = {
   factor: number
 }
 
-type ShoppingListItem = {
-  ingredientId: string
+type AccumulatedPurchaseItem = {
+  itemKey: string
+  kind: PurchaseKind
+  sourceId: string
   name: string
-  quantity: number
+  category: string
+  supplierName: string
+  quantityNeeded: number
   unit: string
+  costPerUnit: NumericValue
+  costUnit: string
+  stockQuantity: number
+  stockUnit: string
+  hasMixedUnits: boolean
+  sources: Set<string>
+}
+
+type ShoppingListItem = {
+  itemKey: string
+  kind: PurchaseKind
+  sourceId: string
+  name: string
+  category: string
+  supplierName: string
+  quantityNeeded: number
+  stockQuantity: number
+  quantityToBuy: number
+  unit: string
+  stockUnit: string
   estimatedCost: number | null
   hasMixedUnits: boolean
+  sources: string[]
+  isInStock: boolean
+}
+
+type ShoppingList = {
+  ingredients: ShoppingListItem[]
+  packaging: ShoppingListItem[]
+  inStock: ShoppingListItem[]
+}
+
+type DateRange = {
+  start: string
+  end: string
 }
 
 const unitDefinitions: Record<string, UnitDefinition> = {
@@ -71,18 +160,19 @@ const unitDefinitions: Record<string, UnitDefinition> = {
   un: { kind: 'count', factor: 1 },
   unidade: { kind: 'count', factor: 1 },
   unidades: { kind: 'count', factor: 1 },
-  fatia: { kind: 'count', factor: 1 },
-  fatias: { kind: 'count', factor: 1 },
-  porcao: { kind: 'count', factor: 1 },
-  porcoes: { kind: 'count', factor: 1 },
-  porção: { kind: 'count', factor: 1 },
-  porções: { kind: 'count', factor: 1 },
   pacote: { kind: 'count', factor: 1 },
   pacotes: { kind: 'count', factor: 1 },
   pct: { kind: 'count', factor: 1 },
 }
 
-function parseNumber(value: number | string | null | undefined) {
+const shoppingModeOptions: { id: ShoppingMode; label: string }[] = [
+  { id: 'recipes', label: 'Receitas' },
+  { id: 'selected_orders', label: 'Pedidos selecionados' },
+  { id: 'week', label: 'Pedidos da semana' },
+  { id: 'month', label: 'Pedidos do mes' },
+]
+
+function parseNumber(value: NumericValue) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : 0
   }
@@ -107,15 +197,6 @@ function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
 
-function canConvertUnits(fromUnit: string, toUnit: string) {
-  const fromDefinition = getUnitDefinition(fromUnit)
-  const toDefinition = getUnitDefinition(toUnit)
-
-  return Boolean(
-    fromDefinition && toDefinition && fromDefinition.kind === toDefinition.kind
-  )
-}
-
 function convertQuantity(quantity: number, fromUnit: string, toUnit: string) {
   const fromDefinition = getUnitDefinition(fromUnit)
   const toDefinition = getUnitDefinition(toUnit)
@@ -127,37 +208,12 @@ function convertQuantity(quantity: number, fromUnit: string, toUnit: string) {
   return (quantity * fromDefinition.factor) / toDefinition.factor
 }
 
-function calculateIngredientCost(
-  quantity: number,
-  recipeUnit: string,
-  ingredient: Ingredient | undefined
-) {
-  if (!ingredient) return null
-
-  const costPerUnit = parseNumber(ingredient.cost_per_unit)
-  const ingredientUnit = ingredient.usage_unit?.trim() || recipeUnit
-
-  if (quantity <= 0 || costPerUnit <= 0) return null
-
-  const recipeDefinition = getUnitDefinition(recipeUnit)
-  const ingredientDefinition = getUnitDefinition(ingredientUnit)
-
-  if (
-    recipeDefinition &&
-    ingredientDefinition &&
-    recipeDefinition.kind === ingredientDefinition.kind
-  ) {
-    const quantityInIngredientUnit =
-      (quantity * recipeDefinition.factor) / ingredientDefinition.factor
-
-    return quantityInIngredientUnit * costPerUnit
-  }
-
-  return quantity * costPerUnit
+function canConvertUnits(fromUnit: string, toUnit: string) {
+  return convertQuantity(1, fromUnit, toUnit) !== null
 }
 
 function formatCurrency(value: number | null | undefined) {
-  if (value === null || value === undefined) return 'Indisponível'
+  if (value === null || value === undefined) return 'Indisponivel'
 
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -171,11 +227,53 @@ function formatNumber(value: number | null | undefined) {
   }).format(value ?? 0)
 }
 
+function formatDate(date: string | null) {
+  if (!date) return 'Sem data'
+
+  return new Date(`${date}T00:00:00`).toLocaleDateString('pt-BR')
+}
+
+function formatInputDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function getCurrentWeekRange(): DateRange {
+  const today = new Date()
+  const dayOfWeek = today.getDay()
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset)
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6)
+
+  return {
+    start: formatInputDate(start),
+    end: formatInputDate(end),
+  }
+}
+
+function getCurrentMonthRange(): DateRange {
+  const today = new Date()
+  const start = new Date(today.getFullYear(), today.getMonth(), 1)
+  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0)
+
+  return {
+    start: formatInputDate(start),
+    end: formatInputDate(end),
+  }
+}
+
+function isDateInRange(date: string | null, range: DateRange) {
+  return Boolean(date && date >= range.start && date <= range.end)
+}
+
 function getYieldLabel(recipe: Recipe) {
   const yieldAmount = parseNumber(recipe.yield_amount)
   const yieldUnit = recipe.yield_unit?.trim() || 'unidades'
 
-  if (yieldAmount <= 0) return `Rendimento não informado em ${yieldUnit}`
+  if (yieldAmount <= 0) return `Rendimento nao informado em ${yieldUnit}`
 
   return `${formatNumber(yieldAmount)} ${yieldUnit}`
 }
@@ -186,23 +284,218 @@ function getDefaultProductionAmount(recipe: Recipe) {
   return yieldAmount > 0 ? String(yieldAmount) : ''
 }
 
-function addCost(previousCost: number | null, nextCost: number | null) {
-  if (previousCost === null || nextCost === null) return null
+function getCustomer(order: Order) {
+  const customer = order.customers
 
-  return previousCost + nextCost
+  return Array.isArray(customer) ? customer[0] : customer
+}
+
+function getOrderTitle(order: Order) {
+  const customerName = getCustomer(order)?.name
+  const firstItem = order.order_items?.[0]?.item_name
+
+  return customerName || firstItem || 'Pedido sem cliente'
+}
+
+function getOrderSubtitle(order: Order) {
+  const itemNames = (order.order_items ?? [])
+    .filter((item) => !item.parent_order_item_id)
+    .map((item) => item.item_name)
+    .filter((itemName) => itemName.trim())
+
+  return itemNames.length > 0 ? itemNames.join(', ') : 'Sem itens estruturados'
+}
+
+function calculateEstimatedCost(
+  quantity: number,
+  quantityUnit: string,
+  costPerUnit: NumericValue,
+  costUnit: string
+) {
+  const unitCost = parseNumber(costPerUnit)
+
+  if (quantity <= 0 || unitCost <= 0) return null
+
+  const convertedQuantity = canConvertUnits(quantityUnit, costUnit)
+    ? convertQuantity(quantity, quantityUnit, costUnit)
+    : null
+
+  return (convertedQuantity ?? quantity) * unitCost
+}
+
+function sortShoppingItems(items: ShoppingListItem[]) {
+  return [...items].sort((firstItem, secondItem) => {
+    const supplierComparison = firstItem.supplierName.localeCompare(
+      secondItem.supplierName,
+      'pt-BR'
+    )
+    if (supplierComparison !== 0) return supplierComparison
+
+    const categoryComparison = firstItem.category.localeCompare(secondItem.category, 'pt-BR')
+    if (categoryComparison !== 0) return categoryComparison
+
+    return firstItem.name.localeCompare(secondItem.name, 'pt-BR')
+  })
+}
+
+function addQuantityToAccumulator(
+  accumulator: Map<string, AccumulatedPurchaseItem>,
+  item: Omit<AccumulatedPurchaseItem, 'quantityNeeded' | 'hasMixedUnits' | 'sources'> & {
+    quantity: number
+    sourceLabel: string
+  }
+) {
+  if (item.quantity <= 0) return
+
+  const currentItem = accumulator.get(item.itemKey)
+
+  if (!currentItem) {
+    accumulator.set(item.itemKey, {
+      itemKey: item.itemKey,
+      kind: item.kind,
+      sourceId: item.sourceId,
+      name: item.name,
+      category: item.category,
+      supplierName: item.supplierName,
+      quantityNeeded: item.quantity,
+      unit: item.unit,
+      costPerUnit: item.costPerUnit,
+      costUnit: item.costUnit,
+      stockQuantity: item.stockQuantity,
+      stockUnit: item.stockUnit,
+      hasMixedUnits: false,
+      sources: new Set([item.sourceLabel]),
+    })
+    return
+  }
+
+  if (normalizeUnit(currentItem.unit) === normalizeUnit(item.unit)) {
+    currentItem.quantityNeeded += item.quantity
+  } else {
+    const convertedQuantity = convertQuantity(item.quantity, item.unit, currentItem.unit)
+
+    if (convertedQuantity === null) {
+      currentItem.quantityNeeded += item.quantity
+      currentItem.hasMixedUnits = true
+    } else {
+      currentItem.quantityNeeded += convertedQuantity
+    }
+  }
+
+  currentItem.sources.add(item.sourceLabel)
+}
+
+function getStockQuantityInUnit(item: AccumulatedPurchaseItem) {
+  if (item.kind !== 'ingredient') return 0
+  if (item.stockQuantity <= 0) return 0
+
+  if (normalizeUnit(item.stockUnit) === normalizeUnit(item.unit)) {
+    return item.stockQuantity
+  }
+
+  return convertQuantity(item.stockQuantity, item.stockUnit, item.unit) ?? 0
+}
+
+function finalizeShoppingItem(item: AccumulatedPurchaseItem): ShoppingListItem {
+  const stockQuantity = getStockQuantityInUnit(item)
+  const quantityToBuy = Math.max(item.quantityNeeded - stockQuantity, 0)
+  const estimatedCost = calculateEstimatedCost(
+    quantityToBuy,
+    item.unit,
+    item.costPerUnit,
+    item.costUnit
+  )
+
+  return {
+    itemKey: item.itemKey,
+    kind: item.kind,
+    sourceId: item.sourceId,
+    name: item.name,
+    category: item.category,
+    supplierName: item.supplierName,
+    quantityNeeded: item.quantityNeeded,
+    stockQuantity,
+    quantityToBuy,
+    unit: item.unit,
+    stockUnit: item.stockUnit,
+    estimatedCost,
+    hasMixedUnits:
+      item.hasMixedUnits ||
+      (item.kind === 'ingredient' &&
+        item.stockQuantity > 0 &&
+        !canConvertUnits(item.stockUnit, item.unit)),
+    sources: Array.from(item.sources).sort((firstSource, secondSource) =>
+      firstSource.localeCompare(secondSource, 'pt-BR')
+    ),
+    isInStock: item.kind === 'ingredient' && quantityToBuy <= 0,
+  }
+}
+
+function groupItemsBySupplierAndCategory(items: ShoppingListItem[]) {
+  const groups = new Map<string, { supplierName: string; category: string; items: ShoppingListItem[] }>()
+
+  items.forEach((item) => {
+    const key = `${item.supplierName}::${item.category}`
+    const currentGroup = groups.get(key)
+
+    if (currentGroup) {
+      currentGroup.items.push(item)
+      return
+    }
+
+    groups.set(key, {
+      supplierName: item.supplierName,
+      category: item.category,
+      items: [item],
+    })
+  })
+
+  return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
+    const supplierComparison = firstGroup.supplierName.localeCompare(
+      secondGroup.supplierName,
+      'pt-BR'
+    )
+    if (supplierComparison !== 0) return supplierComparison
+
+    return firstGroup.category.localeCompare(secondGroup.category, 'pt-BR')
+  })
+}
+
+function groupItemsBySupplier(items: ShoppingListItem[]) {
+  const groups = new Map<string, ShoppingListItem[]>()
+
+  items.forEach((item) => {
+    const currentItems = groups.get(item.supplierName) ?? []
+    currentItems.push(item)
+    groups.set(item.supplierName, currentItems)
+  })
+
+  return Array.from(groups.entries()).sort(([firstSupplier], [secondSupplier]) =>
+    firstSupplier.localeCompare(secondSupplier, 'pt-BR')
+  )
 }
 
 export default function ListaComprasPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([])
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [recipePackaging, setRecipePackaging] = useState<RecipePackaging[]>([])
+  const [packagingItems, setPackagingItems] = useState<Packaging[]>([])
+  const [orders, setOrders] = useState<Order[]>([])
+  const [orderItems, setOrderItems] = useState<OrderItem[]>([])
+  const [shoppingMode, setShoppingMode] = useState<ShoppingMode>('recipes')
   const [selectedRecipeIds, setSelectedRecipeIds] = useState<Set<string>>(new Set())
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set())
   const [productionAmounts, setProductionAmounts] = useState<Record<string, string>>({})
+  const [purchasedItemKeys, setPurchasedItemKeys] = useState<Set<string>>(new Set())
   const [hasGeneratedList, setHasGeneratedList] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [copyFeedback, setCopyFeedback] = useState('')
   const supabase = useMemo(() => createClient(), [])
+
+  const weekRange = useMemo(() => getCurrentWeekRange(), [])
+  const monthRange = useMemo(() => getCurrentMonthRange(), [])
 
   useEffect(() => {
     let isMounted = true
@@ -218,31 +511,34 @@ export default function ListaComprasPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuário não autenticado')
+          throw new Error('Usuario nao autenticado')
         }
 
         const { data: recipesData, error: recipesError } = await supabase
           .from('recipes')
-          .select('id, user_id, name, category, yield_amount, yield_unit, is_third_party')
+          .select(
+            'id, user_id, name, category, yield_amount, yield_unit, product_type, is_third_party'
+          )
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
         if (recipesError) throw recipesError
 
-        const loadedRecipes = ((recipesData ?? []) as Recipe[]).filter(
-          (recipe) => recipe.is_third_party !== true
-        )
-        const recipeIds = loadedRecipes.map((recipe) => recipe.id)
+        const loadedRecipes = (recipesData ?? []) as Recipe[]
+        const internalRecipeIds = loadedRecipes
+          .filter((recipe) => recipe.is_third_party !== true)
+          .map((recipe) => recipe.id)
 
         let loadedRecipeIngredients: RecipeIngredient[] = []
         let loadedIngredients: Ingredient[] = []
+        let loadedRecipePackaging: RecipePackaging[] = []
+        let loadedPackagingItems: Packaging[] = []
 
-        if (recipeIds.length > 0) {
-          const { data: recipeIngredientsData, error: recipeIngredientsError } =
-            await supabase
-              .from('recipe_ingredients')
-              .select('recipe_id, ingredient_id, quantity, unit')
-              .in('recipe_id', recipeIds)
+        if (internalRecipeIds.length > 0) {
+          const { data: recipeIngredientsData, error: recipeIngredientsError } = await supabase
+            .from('recipe_ingredients')
+            .select('recipe_id, ingredient_id, quantity, unit')
+            .in('recipe_id', internalRecipeIds)
 
           if (recipeIngredientsError) throw recipeIngredientsError
 
@@ -259,7 +555,9 @@ export default function ListaComprasPage() {
           if (ingredientIds.length > 0) {
             const { data: ingredientsData, error: ingredientsError } = await supabase
               .from('ingredients')
-              .select('id, user_id, name, usage_unit, cost_per_unit')
+              .select(
+                'id, user_id, name, category, usage_unit, cost_per_unit, stock_quantity, stock_unit'
+              )
               .eq('user_id', user.id)
               .in('id', ingredientIds)
               .order('name', { ascending: true })
@@ -268,15 +566,87 @@ export default function ListaComprasPage() {
 
             loadedIngredients = (ingredientsData ?? []) as Ingredient[]
           }
+
+          const { data: recipePackagingData, error: recipePackagingError } = await supabase
+            .from('recipe_packaging')
+            .select('recipe_id, packaging_id, quantity_per_recipe_unit, usage_type')
+            .in('recipe_id', internalRecipeIds)
+
+          if (recipePackagingError) throw recipePackagingError
+
+          loadedRecipePackaging = (recipePackagingData ?? []) as RecipePackaging[]
+
+          const packagingIds = Array.from(
+            new Set(
+              loadedRecipePackaging
+                .map((item) => item.packaging_id)
+                .filter((packagingId) => packagingId.length > 0)
+            )
+          )
+
+          if (packagingIds.length > 0) {
+            const { data: packagingData, error: packagingError } = await supabase
+              .from('packaging')
+              .select('id, user_id, name, category, unit, cost_per_unit, capacity, capacity_unit')
+              .eq('user_id', user.id)
+              .in('id', packagingIds)
+              .order('name', { ascending: true })
+
+            if (packagingError) throw packagingError
+
+            loadedPackagingItems = (packagingData ?? []) as Packaging[]
+          }
         }
 
+        const { data: ordersData, error: ordersError } = await supabase
+          .from('orders')
+          .select(
+            `
+              id,
+              user_id,
+              delivery_date,
+              delivery_time,
+              status,
+              customers (
+                name
+              ),
+              order_items (
+                id,
+                order_id,
+                recipe_id,
+                parent_order_item_id,
+                item_name,
+                quantity
+              )
+            `
+          )
+          .eq('user_id', user.id)
+          .neq('status', 'cancelado')
+          .order('delivery_date', { ascending: true })
+
+        if (ordersError) throw ordersError
+
+        const loadedOrders = (ordersData ?? []) as Order[]
+        const loadedOrderItems = loadedOrders.flatMap((order) =>
+          (order.order_items ?? []).map((item) => ({
+            ...item,
+            order_id: item.order_id || order.id,
+          }))
+        )
+
         if (isMounted) {
-          setRecipes(loadedRecipes)
+          setRecipes(loadedRecipes.filter((recipe) => recipe.is_third_party !== true))
           setRecipeIngredients(loadedRecipeIngredients)
           setIngredients(loadedIngredients)
+          setRecipePackaging(loadedRecipePackaging)
+          setPackagingItems(loadedPackagingItems)
+          setOrders(loadedOrders)
+          setOrderItems(loadedOrderItems)
           setProductionAmounts(
             loadedRecipes.reduce<Record<string, string>>((amounts, recipe) => {
-              amounts[recipe.id] = getDefaultProductionAmount(recipe)
+              if (recipe.is_third_party !== true) {
+                amounts[recipe.id] = getDefaultProductionAmount(recipe)
+              }
               return amounts
             }, {})
           )
@@ -294,16 +664,16 @@ export default function ListaComprasPage() {
       }
     }
 
-    loadShoppingData()
+    void loadShoppingData()
 
     return () => {
       isMounted = false
     }
   }, [supabase])
 
-  const selectedRecipes = useMemo(() => {
-    return recipes.filter((recipe) => selectedRecipeIds.has(recipe.id))
-  }, [recipes, selectedRecipeIds])
+  const recipeById = useMemo(() => {
+    return new Map(recipes.map((recipe) => [recipe.id, recipe]))
+  }, [recipes])
 
   const recipeIngredientsByRecipeId = useMemo(() => {
     return recipeIngredients.reduce<Map<string, RecipeIngredient[]>>((groups, item) => {
@@ -319,71 +689,200 @@ export default function ListaComprasPage() {
     return new Map(ingredients.map((ingredient) => [ingredient.id, ingredient]))
   }, [ingredients])
 
-  const shoppingList = useMemo(() => {
-    const groupedItems = new Map<string, ShoppingListItem>()
+  const recipePackagingByRecipeId = useMemo(() => {
+    return recipePackaging.reduce<Map<string, RecipePackaging[]>>((groups, item) => {
+      const currentItems = groups.get(item.recipe_id) ?? []
+      currentItems.push(item)
+      groups.set(item.recipe_id, currentItems)
 
-    selectedRecipes.forEach((recipe) => {
+      return groups
+    }, new Map())
+  }, [recipePackaging])
+
+  const packagingById = useMemo(() => {
+    return new Map(packagingItems.map((packaging) => [packaging.id, packaging]))
+  }, [packagingItems])
+
+  const ordersInWeek = useMemo(() => {
+    return orders.filter((order) => isDateInRange(order.delivery_date, weekRange))
+  }, [orders, weekRange])
+
+  const ordersInMonth = useMemo(() => {
+    return orders.filter((order) => isDateInRange(order.delivery_date, monthRange))
+  }, [monthRange, orders])
+
+  const selectedRecipes = useMemo(() => {
+    return recipes.filter((recipe) => selectedRecipeIds.has(recipe.id))
+  }, [recipes, selectedRecipeIds])
+
+  const selectedOrders = useMemo(() => {
+    return orders.filter((order) => selectedOrderIds.has(order.id))
+  }, [orders, selectedOrderIds])
+
+  const scopedOrders = useMemo(() => {
+    if (shoppingMode === 'selected_orders') return selectedOrders
+    if (shoppingMode === 'week') return ordersInWeek
+    if (shoppingMode === 'month') return ordersInMonth
+
+    return []
+  }, [ordersInMonth, ordersInWeek, selectedOrders, shoppingMode])
+
+  const shoppingList = useMemo<ShoppingList>(() => {
+    const accumulator = new Map<string, AccumulatedPurchaseItem>()
+
+    function addRecipeNeeds(
+      recipe: Recipe,
+      productQuantity: number,
+      sourceLabel: string,
+      skipKitRecipe: boolean
+    ) {
+      if (recipe.is_third_party === true) return
+      if (skipKitRecipe && recipe.product_type === 'kit') return
+
       const yieldAmount = parseNumber(recipe.yield_amount)
-      const desiredAmount = parseNumber(productionAmounts[recipe.id])
-
-      if (yieldAmount <= 0 || desiredAmount <= 0) return
-
-      const factor = desiredAmount / yieldAmount
+      const ingredientFactor = yieldAmount > 0 ? productQuantity / yieldAmount : productQuantity
       const recipeItems = recipeIngredientsByRecipeId.get(recipe.id) ?? []
 
       recipeItems.forEach((recipeItem) => {
         const ingredient = ingredientById.get(recipeItem.ingredient_id)
-        const unit = recipeItem.unit?.trim() || ingredient?.usage_unit || 'unidade'
-        const neededQuantity = parseNumber(recipeItem.quantity) * factor
-        const estimatedCost = calculateIngredientCost(neededQuantity, unit, ingredient)
-        const name = ingredient?.name || 'Ingrediente não encontrado'
-        const currentItem = groupedItems.get(recipeItem.ingredient_id)
+        const unit = recipeItem.unit?.trim() || ingredient?.usage_unit?.trim() || 'unidade'
+        const neededQuantity = parseNumber(recipeItem.quantity) * ingredientFactor
+        const stockUnit = ingredient?.stock_unit?.trim() || ingredient?.usage_unit?.trim() || unit
 
-        if (!currentItem) {
-          groupedItems.set(recipeItem.ingredient_id, {
-            ingredientId: recipeItem.ingredient_id,
-            name,
-            quantity: neededQuantity,
-            unit,
-            estimatedCost,
-            hasMixedUnits: false,
-          })
-          return
-        }
-
-        if (normalizeUnit(currentItem.unit) === normalizeUnit(unit)) {
-          currentItem.quantity += neededQuantity
-        } else if (canConvertUnits(unit, currentItem.unit)) {
-          currentItem.quantity += convertQuantity(neededQuantity, unit, currentItem.unit) ?? 0
-        } else {
-          currentItem.quantity += neededQuantity
-          currentItem.hasMixedUnits = true
-        }
-
-        currentItem.estimatedCost = addCost(currentItem.estimatedCost, estimatedCost)
+        addQuantityToAccumulator(accumulator, {
+          itemKey: `ingredient:${recipeItem.ingredient_id}`,
+          kind: 'ingredient',
+          sourceId: recipeItem.ingredient_id,
+          name: ingredient?.name || 'Ingrediente nao encontrado',
+          category: ingredient?.category?.trim() || 'Sem categoria',
+          supplierName: 'Sem fornecedor',
+          quantity: neededQuantity,
+          unit,
+          costPerUnit: ingredient?.cost_per_unit ?? null,
+          costUnit: ingredient?.usage_unit?.trim() || unit,
+          stockQuantity: parseNumber(ingredient?.stock_quantity),
+          stockUnit,
+          sourceLabel,
+        })
       })
-    })
 
-    return Array.from(groupedItems.values()).sort((firstItem, secondItem) =>
-      firstItem.name.localeCompare(secondItem.name, 'pt-BR')
+      const packagingLinks = recipePackagingByRecipeId.get(recipe.id) ?? []
+
+      packagingLinks.forEach((packagingLink) => {
+        const packaging = packagingById.get(packagingLink.packaging_id)
+        const unit = packaging?.unit?.trim() || 'unidade'
+        const capacity = parseNumber(packaging?.capacity)
+        const safeCapacity = capacity > 0 ? capacity : 1
+        const neededQuantity =
+          packagingLink.usage_type === 'transporte'
+            ? Math.ceil(productQuantity / safeCapacity)
+            : productQuantity * parseNumber(packagingLink.quantity_per_recipe_unit)
+
+        addQuantityToAccumulator(accumulator, {
+          itemKey: `packaging:${packagingLink.packaging_id}`,
+          kind: 'packaging',
+          sourceId: packagingLink.packaging_id,
+          name: packaging?.name || 'Embalagem nao encontrada',
+          category: packaging?.category?.trim() || 'Sem categoria',
+          supplierName: 'Sem fornecedor',
+          quantity: neededQuantity,
+          unit,
+          costPerUnit: packaging?.cost_per_unit ?? null,
+          costUnit: unit,
+          stockQuantity: 0,
+          stockUnit: unit,
+          sourceLabel,
+        })
+      })
+    }
+
+    if (shoppingMode === 'recipes') {
+      selectedRecipes.forEach((recipe) => {
+        const desiredAmount = parseNumber(productionAmounts[recipe.id])
+
+        if (desiredAmount <= 0) return
+
+        addRecipeNeeds(recipe, desiredAmount, recipe.name, false)
+      })
+    } else {
+      const scopedOrderIds = new Set(scopedOrders.map((order) => order.id))
+      const scopedOrderItems = orderItems.filter((item) => scopedOrderIds.has(item.order_id))
+
+      scopedOrderItems.forEach((orderItem) => {
+        if (!orderItem.recipe_id) return
+
+        const recipe = recipeById.get(orderItem.recipe_id)
+        if (!recipe) return
+
+        addRecipeNeeds(recipe, parseNumber(orderItem.quantity), orderItem.item_name, true)
+      })
+    }
+
+    const allItems = Array.from(accumulator.values()).map(finalizeShoppingItem)
+    const ingredientsToBuy = allItems.filter(
+      (item) => item.kind === 'ingredient' && item.quantityToBuy > 0
     )
+    const packagingToBuy = allItems.filter(
+      (item) => item.kind === 'packaging' && item.quantityToBuy > 0
+    )
+    const inStock = allItems.filter((item) => item.isInStock)
+
+    return {
+      ingredients: sortShoppingItems(ingredientsToBuy),
+      packaging: sortShoppingItems(packagingToBuy),
+      inStock: sortShoppingItems(inStock),
+    }
   }, [
     ingredientById,
+    orderItems,
+    packagingById,
     productionAmounts,
+    recipeById,
     recipeIngredientsByRecipeId,
+    recipePackagingByRecipeId,
+    scopedOrders,
     selectedRecipes,
+    shoppingMode,
   ])
 
-  const totalEstimatedCost = useMemo(() => {
-    return shoppingList.reduce((sum, item) => sum + (item.estimatedCost ?? 0), 0)
-  }, [shoppingList])
-
-  const hasUnavailableCosts = shoppingList.some((item) => item.estimatedCost === null)
+  const visibleIngredientItems = shoppingList.ingredients.filter(
+    (item) => !purchasedItemKeys.has(item.itemKey)
+  )
+  const visiblePackagingItems = shoppingList.packaging.filter(
+    (item) => !purchasedItemKeys.has(item.itemKey)
+  )
+  const purchasedItems = [...shoppingList.ingredients, ...shoppingList.packaging].filter((item) =>
+    purchasedItemKeys.has(item.itemKey)
+  )
+  const visibleShoppingItems = [...visibleIngredientItems, ...visiblePackagingItems]
+  const totalEstimatedCost = visibleShoppingItems.reduce(
+    (sum, item) => sum + (item.estimatedCost ?? 0),
+    0
+  )
+  const hasUnavailableCosts = visibleShoppingItems.some((item) => item.estimatedCost === null)
   const hasSelectedRecipes = selectedRecipeIds.size > 0
-  const canCopyList = hasGeneratedList && shoppingList.length > 0
+  const hasSelectedOrders = selectedOrderIds.size > 0
+  const hasModeInput =
+    shoppingMode === 'recipes'
+      ? hasSelectedRecipes
+      : shoppingMode === 'selected_orders'
+        ? hasSelectedOrders
+        : scopedOrders.length > 0
+  const canCopyList = hasGeneratedList && visibleShoppingItems.length > 0
+
+  function resetGeneratedList() {
+    setHasGeneratedList(false)
+    setPurchasedItemKeys(new Set())
+    setCopyFeedback('')
+  }
+
+  function handleModeChange(mode: ShoppingMode) {
+    setShoppingMode(mode)
+    setError('')
+    resetGeneratedList()
+  }
 
   function toggleRecipe(recipe: Recipe) {
-    setCopyFeedback('')
     setSelectedRecipeIds((currentIds) => {
       const nextIds = new Set(currentIds)
 
@@ -395,33 +894,55 @@ export default function ListaComprasPage() {
 
       return nextIds
     })
+    resetGeneratedList()
   }
 
-  function handleProductionAmountChange(
-    event: ChangeEvent<HTMLInputElement>,
-    recipeId: string
-  ) {
-    setCopyFeedback('')
+  function toggleOrder(order: Order) {
+    setSelectedOrderIds((currentIds) => {
+      const nextIds = new Set(currentIds)
+
+      if (nextIds.has(order.id)) {
+        nextIds.delete(order.id)
+      } else {
+        nextIds.add(order.id)
+      }
+
+      return nextIds
+    })
+    resetGeneratedList()
+  }
+
+  function handleProductionAmountChange(recipeId: string, value: string) {
     setProductionAmounts((currentAmounts) => ({
       ...currentAmounts,
-      [recipeId]: event.target.value,
+      [recipeId]: value,
     }))
+    resetGeneratedList()
   }
 
   function validateSelection() {
-    if (selectedRecipeIds.size === 0) {
-      return 'Selecione pelo menos uma receita para gerar a lista.'
+    if (shoppingMode === 'recipes') {
+      if (selectedRecipeIds.size === 0) {
+        return 'Selecione pelo menos uma receita para gerar a lista.'
+      }
+
+      const invalidRecipe = selectedRecipes.find((recipe) => {
+        const desiredAmount = parseNumber(productionAmounts[recipe.id])
+
+        return desiredAmount <= 0
+      })
+
+      if (invalidRecipe) {
+        return 'Receitas selecionadas precisam ter quantidade a produzir maior que zero.'
+      }
     }
 
-    const invalidRecipe = selectedRecipes.find((recipe) => {
-      const yieldAmount = parseNumber(recipe.yield_amount)
-      const desiredAmount = parseNumber(productionAmounts[recipe.id])
+    if (shoppingMode === 'selected_orders' && selectedOrderIds.size === 0) {
+      return 'Selecione pelo menos um pedido para gerar a lista.'
+    }
 
-      return yieldAmount <= 0 || desiredAmount <= 0
-    })
-
-    if (invalidRecipe) {
-      return 'Receitas selecionadas precisam ter rendimento original e quantidade a produzir maiores que zero.'
+    if ((shoppingMode === 'week' || shoppingMode === 'month') && scopedOrders.length === 0) {
+      return 'Nao ha pedidos no periodo selecionado.'
     }
 
     return ''
@@ -438,38 +959,47 @@ export default function ListaComprasPage() {
 
     setError('')
     setCopyFeedback('')
+    setPurchasedItemKeys(new Set())
     setHasGeneratedList(true)
   }
 
   function handleClearSelection() {
     setSelectedRecipeIds(new Set())
-    setHasGeneratedList(false)
-    setCopyFeedback('')
-    setError('')
+    setSelectedOrderIds(new Set())
     setProductionAmounts(
       recipes.reduce<Record<string, string>>((amounts, recipe) => {
         amounts[recipe.id] = getDefaultProductionAmount(recipe)
         return amounts
       }, {})
     )
+    setError('')
+    resetGeneratedList()
+  }
+
+  function markAsPurchased(itemKey: string) {
+    setPurchasedItemKeys((currentKeys) => {
+      const nextKeys = new Set(currentKeys)
+      nextKeys.add(itemKey)
+      return nextKeys
+    })
+    setCopyFeedback('')
   }
 
   async function handleCopyList() {
     if (!canCopyList) return
 
+    const copyGroups = groupItemsBySupplier(visibleShoppingItems)
     const listText = [
       'Lista de compras - Doceria Pro',
-      ...shoppingList.map((item) => {
-        const costText =
-          item.estimatedCost === null
-            ? 'custo estimado indisponível'
-            : `custo estimado ${formatCurrency(item.estimatedCost)}`
+      ...copyGroups.flatMap(([supplierName, supplierItems]) => [
+        supplierName,
+        ...supplierItems.map((item) => {
+          const costText =
+            item.estimatedCost === null ? 'custo estimado indisponivel' : formatCurrency(item.estimatedCost)
 
-        return `${item.name} - ${formatNumber(item.quantity)} ${item.unit} - ${costText}`
-      }),
-      `Total estimado${hasUnavailableCosts ? ' parcial' : ''}: ${formatCurrency(
-        totalEstimatedCost
-      )}`,
+          return `- ${item.name}: ${formatNumber(item.quantityToBuy)} ${item.unit} - ${costText}`
+        }),
+      ]),
     ].join('\n')
 
     try {
@@ -478,27 +1008,164 @@ export default function ListaComprasPage() {
     } catch (err) {
       console.error('Erro ao copiar lista de compras:', err)
       setCopyFeedback('')
-      setError('Não foi possível copiar a lista.')
+      setError('Nao foi possivel copiar a lista.')
     }
+  }
+
+  function renderPurchaseItems(items: ShoppingListItem[]) {
+    const groups = groupItemsBySupplierAndCategory(items)
+
+    return (
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <div key={`${group.supplierName}-${group.category}`} className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-[#C9A84C]">
+                {group.supplierName}
+              </p>
+              <span className="rounded-full bg-[#FAF6F0] px-2 py-1 text-xs font-semibold text-[#1A0A08]">
+                {group.category}
+              </span>
+            </div>
+
+            {group.items.map((item) => (
+              <article
+                key={item.itemKey}
+                className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="break-words text-base font-bold text-[#1A0A08]">
+                      {item.name}
+                    </p>
+                    <p className="mt-1 text-sm text-[#999999]">
+                      Comprar {formatNumber(item.quantityToBuy)} {item.unit}
+                    </p>
+                    <p className="mt-1 text-xs text-[#999999]">
+                      Necessario {formatNumber(item.quantityNeeded)} {item.unit}
+                      {item.kind === 'ingredient' &&
+                        ` · estoque ${formatNumber(item.stockQuantity)} ${item.unit}`}
+                    </p>
+                    {item.sources.length > 0 && (
+                      <p className="mt-2 text-xs text-[#6F625F]">
+                        Origem: {item.sources.join(', ')}
+                      </p>
+                    )}
+                    {item.hasMixedUnits && (
+                      <p className="mt-2 text-xs font-semibold text-[#C0392B]">
+                        Ha unidades diferentes ou estoque em unidade incompativel.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+                    <div className="rounded-lg bg-white px-3 py-2 sm:text-right">
+                      <p className="text-xs font-medium text-[#999999]">Custo estimado</p>
+                      <p className="mt-1 font-bold text-[#1A0A08]">
+                        {formatCurrency(item.estimatedCost)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => markAsPurchased(item.itemKey)}
+                      className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
+                    >
+                      <Check size={16} aria-hidden="true" />
+                      <span>Marcar como comprado</span>
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderReadonlyItems(items: ShoppingListItem[]) {
+    if (items.length === 0) return null
+
+    return (
+      <div className="space-y-2">
+        {items.map((item) => (
+          <div
+            key={item.itemKey}
+            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white p-3 text-sm"
+          >
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <p className="font-semibold text-[#1A0A08]">{item.name}</p>
+              <p className="text-[#999999]">
+                {formatNumber(item.quantityNeeded)} {item.unit}
+              </p>
+            </div>
+            {item.kind === 'ingredient' && (
+              <p className="mt-1 text-xs font-semibold text-[#1F7A3A]">
+                Em estoque: {formatNumber(item.stockQuantity)} {item.unit}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderOrderCard(order: Order, selectable: boolean) {
+    const isSelected = selectedOrderIds.has(order.id)
+
+    return (
+      <article
+        key={order.id}
+        className={`rounded-[16px] border p-4 transition-colors ${
+          selectable && isSelected
+            ? 'border-[#C0392B] bg-[#FFF8F5]'
+            : 'border-[rgba(26,10,8,0.07)] bg-white'
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          {selectable && (
+            <input
+              id={`order-${order.id}`}
+              type="checkbox"
+              checked={isSelected}
+              onChange={() => toggleOrder(order)}
+              className="mt-1 h-5 w-5 shrink-0 rounded border-[rgba(26,10,8,0.18)] accent-[#C0392B]"
+            />
+          )}
+          <div className="min-w-0">
+            <label
+              htmlFor={`order-${order.id}`}
+              className="block text-base font-bold text-[#1A0A08]"
+            >
+              {getOrderTitle(order)}
+            </label>
+            <p className="mt-1 text-sm text-[#999999]">{getOrderSubtitle(order)}</p>
+            <p className="mt-2 text-xs font-semibold text-[#C9A84C]">
+              {formatDate(order.delivery_date)}
+              {order.delivery_time ? ` as ${order.delivery_time}` : ''}
+            </p>
+          </div>
+        </div>
+      </article>
+    )
   }
 
   return (
     <div className="w-full pb-28 lg:pb-8">
-      <div className="bg-white border-b border-[rgba(26,10,8,0.07)]">
-        <div className="max-w-7xl mx-auto px-4 lg:px-6 py-5">
+      <div className="border-b border-[rgba(26,10,8,0.07)] bg-white">
+        <div className="mx-auto max-w-7xl px-4 py-5 lg:px-6">
           <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
-            PRODUÇÃO
+            PRODUCAO
           </p>
-          <h1 className="mt-1 text-2xl font-bold text-[#1A0A08]">
-            Lista de compras
-          </h1>
+          <h1 className="mt-1 text-2xl font-bold text-[#1A0A08]">Lista de compras</h1>
           <p className="mt-2 max-w-2xl text-sm text-[#6F625F]">
-            Selecione receitas e quantidades para gerar automaticamente sua lista de compras.
+            Gere compras por receitas ou por pedidos, com ingredientes internos,
+            embalagens e estoque atual descontado.
           </p>
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto w-full px-4 lg:px-6 py-6">
+      <main className="mx-auto w-full max-w-7xl px-4 py-6 lg:px-6">
         {error && (
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#C0392B]">
             <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
@@ -509,7 +1176,7 @@ export default function ListaComprasPage() {
         {isLoading ? (
           <div className="py-14 text-center">
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
-            <p className="mt-3 text-sm text-[#999999]">Carregando receitas...</p>
+            <p className="mt-3 text-sm text-[#999999]">Carregando dados...</p>
           </div>
         ) : recipes.length === 0 ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
@@ -526,103 +1193,164 @@ export default function ListaComprasPage() {
             </Link>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(380px,0.95fr)]">
             <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 shadow-sm lg:p-5">
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-[#1A0A08]">Receitas</h2>
-                  <p className="mt-1 text-sm text-[#999999]">
-                    Ajuste a quantidade desejada antes de gerar a lista.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={handleClearSelection}
-                    disabled={!hasSelectedRecipes}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <RefreshCcw size={17} aria-hidden="true" />
-                    <span>Limpar seleção</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleGenerateList}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
-                  >
-                    <Sparkles size={18} aria-hidden="true" />
-                    <span>Gerar lista</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {recipes.map((recipe) => {
-                  const isSelected = selectedRecipeIds.has(recipe.id)
-
-                  return (
-                    <article
-                      key={recipe.id}
-                      className={`rounded-[16px] border p-4 transition-colors ${
-                        isSelected
-                          ? 'border-[#C0392B] bg-[#FFF8F5]'
-                          : 'border-[rgba(26,10,8,0.07)] bg-white'
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-[#1A0A08]">Origem da compra</h2>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {shoppingModeOptions.map((modeOption) => (
+                    <button
+                      key={modeOption.id}
+                      type="button"
+                      onClick={() => handleModeChange(modeOption.id)}
+                      className={`rounded-lg px-3 py-2.5 text-sm font-semibold transition-colors ${
+                        shoppingMode === modeOption.id
+                          ? 'bg-[#C0392B] text-white'
+                          : 'border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] text-[#1A0A08] hover:bg-white'
                       }`}
                     >
-                      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                        <div className="flex min-w-0 items-start gap-3">
-                          <input
-                            id={`recipe-${recipe.id}`}
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleRecipe(recipe)}
-                            className="mt-1 h-5 w-5 shrink-0 rounded border-[rgba(26,10,8,0.18)] accent-[#C0392B]"
-                          />
-                          <div className="min-w-0">
-                            <label
-                              htmlFor={`recipe-${recipe.id}`}
-                              className="block cursor-pointer text-base font-bold text-[#1A0A08]"
-                            >
-                              {recipe.name}
-                            </label>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <span className="rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-semibold text-[#1A0A08]">
-                                {recipe.category || 'Sem categoria'}
-                              </span>
-                              <span className="rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-semibold text-[#999999]">
-                                Rende {getYieldLabel(recipe)}
-                              </span>
+                      {modeOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  disabled={!hasSelectedRecipes && !hasSelectedOrders && !hasGeneratedList}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCcw size={17} aria-hidden="true" />
+                  <span>Limpar</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateList}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
+                >
+                  <Sparkles size={18} aria-hidden="true" />
+                  <span>Gerar lista</span>
+                </button>
+              </div>
+
+              {shoppingMode === 'recipes' && (
+                <div className="space-y-3">
+                  {recipes.map((recipe) => {
+                    const isSelected = selectedRecipeIds.has(recipe.id)
+
+                    return (
+                      <article
+                        key={recipe.id}
+                        className={`rounded-[16px] border p-4 transition-colors ${
+                          isSelected
+                            ? 'border-[#C0392B] bg-[#FFF8F5]'
+                            : 'border-[rgba(26,10,8,0.07)] bg-white'
+                        }`}
+                      >
+                        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <input
+                              id={`recipe-${recipe.id}`}
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleRecipe(recipe)}
+                              className="mt-1 h-5 w-5 shrink-0 rounded border-[rgba(26,10,8,0.18)] accent-[#C0392B]"
+                            />
+                            <div className="min-w-0">
+                              <label
+                                htmlFor={`recipe-${recipe.id}`}
+                                className="block cursor-pointer text-base font-bold text-[#1A0A08]"
+                              >
+                                {recipe.name}
+                              </label>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <span className="rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-semibold text-[#1A0A08]">
+                                  {recipe.category || 'Sem categoria'}
+                                </span>
+                                <span className="rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-semibold text-[#999999]">
+                                  Rende {getYieldLabel(recipe)}
+                                </span>
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        <div className="w-full md:w-48">
-                          <label
-                            className="mb-2 block text-xs font-semibold text-[#1A0A08]"
-                            htmlFor={`production-${recipe.id}`}
-                          >
-                            Quantidade a produzir
-                          </label>
-                          <input
-                            id={`production-${recipe.id}`}
-                            type="number"
-                            min="0"
-                            step="0.001"
-                            inputMode="decimal"
-                            value={productionAmounts[recipe.id] ?? ''}
-                            onChange={(event) =>
-                              handleProductionAmountChange(event, recipe.id)
-                            }
-                            disabled={!isSelected}
-                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B] disabled:cursor-not-allowed disabled:bg-[#FAF6F0] disabled:text-[#999999]"
-                          />
+                          <div className="w-full md:w-48">
+                            <label
+                              className="mb-2 block text-xs font-semibold text-[#1A0A08]"
+                              htmlFor={`production-${recipe.id}`}
+                            >
+                              Quantidade a produzir
+                            </label>
+                            <input
+                              id={`production-${recipe.id}`}
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              inputMode="decimal"
+                              value={productionAmounts[recipe.id] ?? ''}
+                              onChange={(event) =>
+                                handleProductionAmountChange(recipe.id, event.target.value)
+                              }
+                              disabled={!isSelected}
+                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B] disabled:cursor-not-allowed disabled:bg-[#FAF6F0] disabled:text-[#999999]"
+                            />
+                          </div>
                         </div>
-                      </div>
-                    </article>
-                  )
-                })}
-              </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+
+              {shoppingMode === 'selected_orders' && (
+                <div className="space-y-3">
+                  {orders.length === 0 ? (
+                    <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-8 text-center">
+                      <p className="text-base font-semibold text-[#1A0A08]">
+                        Nenhum pedido disponivel
+                      </p>
+                    </div>
+                  ) : (
+                    orders.map((order) => renderOrderCard(order, true))
+                  )}
+                </div>
+              )}
+
+              {shoppingMode === 'week' && (
+                <div className="space-y-3">
+                  <p className="rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08]">
+                    Semana: {formatDate(weekRange.start)} a {formatDate(weekRange.end)}
+                  </p>
+                  {ordersInWeek.length === 0 ? (
+                    <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-8 text-center">
+                      <p className="text-base font-semibold text-[#1A0A08]">
+                        Nenhum pedido nesta semana
+                      </p>
+                    </div>
+                  ) : (
+                    ordersInWeek.map((order) => renderOrderCard(order, false))
+                  )}
+                </div>
+              )}
+
+              {shoppingMode === 'month' && (
+                <div className="space-y-3">
+                  <p className="rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#1A0A08]">
+                    Mes: {formatDate(monthRange.start)} a {formatDate(monthRange.end)}
+                  </p>
+                  {ordersInMonth.length === 0 ? (
+                    <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-8 text-center">
+                      <p className="text-base font-semibold text-[#1A0A08]">
+                        Nenhum pedido neste mes
+                      </p>
+                    </div>
+                  ) : (
+                    ordersInMonth.map((order) => renderOrderCard(order, false))
+                  )}
+                </div>
+              )}
             </section>
 
             <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 shadow-sm lg:p-5">
@@ -630,7 +1358,7 @@ export default function ListaComprasPage() {
                 <div>
                   <h2 className="text-lg font-bold text-[#1A0A08]">Lista gerada</h2>
                   <p className="mt-1 text-sm text-[#999999]">
-                    Itens agrupados por ingrediente cadastrado.
+                    Itens agrupados por fornecedor e categoria.
                   </p>
                 </div>
 
@@ -649,14 +1377,14 @@ export default function ListaComprasPage() {
                 </button>
               </div>
 
-              {!hasSelectedRecipes ? (
+              {!hasModeInput ? (
                 <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-10 text-center">
                   <ShoppingCart className="mx-auto mb-4 h-11 w-11 text-[#C9A84C]" aria-hidden="true" />
                   <p className="text-base font-semibold text-[#1A0A08]">
-                    Nenhuma receita selecionada
+                    Nenhuma origem selecionada
                   </p>
                   <p className="mt-1 text-sm text-[#999999]">
-                    Escolha uma ou mais receitas para montar sua compra.
+                    Escolha receitas, pedidos ou um periodo com pedidos.
                   </p>
                 </div>
               ) : !hasGeneratedList ? (
@@ -666,68 +1394,78 @@ export default function ListaComprasPage() {
                     Pronta para calcular
                   </p>
                   <p className="mt-1 text-sm text-[#999999]">
-                    Clique em Gerar lista para consolidar os ingredientes.
+                    Clique em Gerar lista para consolidar compras e descontar estoque.
                   </p>
                 </div>
-              ) : shoppingList.length === 0 ? (
+              ) : visibleShoppingItems.length === 0 && shoppingList.inStock.length === 0 ? (
                 <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-10 text-center">
                   <PackageSearch className="mx-auto mb-4 h-11 w-11 text-[#C9A84C]" aria-hidden="true" />
                   <p className="text-base font-semibold text-[#1A0A08]">
-                    Nenhum ingrediente encontrado
+                    Nenhum item encontrado
                   </p>
                   <p className="mt-1 text-sm text-[#999999]">
-                    As receitas selecionadas ainda não possuem ingredientes vinculados.
+                    Produtos terceirizados sao ignorados e receitas sem insumos nao geram compras.
                   </p>
                 </div>
               ) : (
                 <>
-                  <div className="space-y-3">
-                    {shoppingList.map((item) => (
-                      <div
-                        key={item.ingredientId}
-                        className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
-                      >
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="min-w-0">
-                            <p className="break-words text-base font-bold text-[#1A0A08]">
-                              {item.name}
-                            </p>
-                            <p className="mt-1 text-sm text-[#999999]">
-                              {formatNumber(item.quantity)} {item.unit}
-                            </p>
-                            {item.hasMixedUnits && (
-                              <p className="mt-2 text-xs font-semibold text-[#C0392B]">
-                                Há unidades diferentes para este ingrediente.
-                              </p>
-                            )}
-                          </div>
+                  {visibleIngredientItems.length > 0 && (
+                    <div>
+                      <h3 className="mb-3 text-base font-bold text-[#1A0A08]">Ingredientes</h3>
+                      {renderPurchaseItems(visibleIngredientItems)}
+                    </div>
+                  )}
 
-                          <div className="shrink-0 rounded-lg bg-white px-3 py-2 sm:text-right">
-                            <p className="text-xs font-medium text-[#999999]">
-                              Custo estimado
-                            </p>
-                            <p className="mt-1 font-bold text-[#1A0A08]">
-                              {formatCurrency(item.estimatedCost)}
-                            </p>
-                          </div>
-                        </div>
+                  {visiblePackagingItems.length > 0 && (
+                    <div className="mt-6">
+                      <h3 className="mb-3 text-base font-bold text-[#1A0A08]">Embalagens</h3>
+                      {renderPurchaseItems(visiblePackagingItems)}
+                    </div>
+                  )}
+
+                  {purchasedItems.length > 0 && (
+                    <div className="mt-6 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4">
+                      <div className="mb-3 flex items-center gap-2">
+                        <PackageCheck size={18} className="text-[#1F7A3A]" aria-hidden="true" />
+                        <h3 className="font-bold text-[#1A0A08]">Comprados</h3>
                       </div>
-                    ))}
-                  </div>
+                      <div className="space-y-2">
+                        {purchasedItems.map((item) => (
+                          <p
+                            key={item.itemKey}
+                            className="text-sm text-[#999999] line-through"
+                          >
+                            {item.name}: {formatNumber(item.quantityToBuy)} {item.unit}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                  <div className="mt-4 rounded-[16px] bg-[#1A0A08] p-4 text-white">
-                    <p className="text-sm font-medium text-[#E8D9D4]">
-                      {hasUnavailableCosts ? 'Total estimado parcial' : 'Total estimado da compra'}
-                    </p>
-                    <p className="mt-1 text-3xl font-bold">
-                      {formatCurrency(totalEstimatedCost)}
-                    </p>
-                    {hasUnavailableCosts && (
-                      <p className="mt-2 text-sm text-[#E8D9D4]">
-                        Alguns itens não têm custo por unidade cadastrado.
+                  {shoppingList.inStock.length > 0 && (
+                    <div className="mt-6 rounded-[16px] border border-[#BFE8CC] bg-[#F4FBF6] p-4">
+                      <h3 className="mb-3 font-bold text-[#1F7A3A]">Em estoque</h3>
+                      {renderReadonlyItems(shoppingList.inStock)}
+                    </div>
+                  )}
+
+                  {visibleShoppingItems.length > 0 && (
+                    <div className="mt-4 rounded-[16px] bg-[#1A0A08] p-4 text-white">
+                      <p className="text-sm font-medium text-[#E8D9D4]">
+                        {hasUnavailableCosts
+                          ? 'Total estimado parcial'
+                          : 'Total estimado da compra'}
                       </p>
-                    )}
-                  </div>
+                      <p className="mt-1 text-3xl font-bold">
+                        {formatCurrency(totalEstimatedCost)}
+                      </p>
+                      {hasUnavailableCosts && (
+                        <p className="mt-2 text-sm text-[#E8D9D4]">
+                          Alguns itens nao tem custo por unidade cadastrado.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </section>
