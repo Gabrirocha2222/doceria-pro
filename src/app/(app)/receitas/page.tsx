@@ -54,6 +54,10 @@ type ProductKitLink = {
   kit_recipe_id: string
 }
 
+type KitCategoryComponentLink = {
+  kit_recipe_id: string
+}
+
 type Supplier = {
   id: string
   name: string
@@ -114,6 +118,9 @@ export default function ReceitasPage() {
     {}
   )
   const [kitItemCountByRecipeId, setKitItemCountByRecipeId] = useState<Record<string, number>>({})
+  const [kitCategoryCountByRecipeId, setKitCategoryCountByRecipeId] = useState<
+    Record<string, number>
+  >({})
   const [supplierNameById, setSupplierNameById] = useState<Record<string, string>>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -149,6 +156,7 @@ export default function ReceitasPage() {
         const recipeIds = recipeRows.map((recipe) => recipe.id)
         const packagingCounts = new Map<string, number>()
         const kitItemCounts = new Map<string, number>()
+        const kitCategoryCounts = new Map<string, number>()
         const supplierIds = Array.from(
           new Set(
             recipeRows
@@ -193,6 +201,25 @@ export default function ReceitasPage() {
               )
             })
           }
+
+          const { data: kitCategoryLinks, error: kitCategoryError } = await supabase
+            .from('kit_category_components')
+            .select('kit_recipe_id')
+            .eq('user_id', user.id)
+            .in('kit_recipe_id', recipeIds)
+
+          if (kitCategoryError) {
+            logSupabaseError('Erro Supabase kit_category_components:', kitCategoryError)
+          } else {
+            const links = (kitCategoryLinks ?? []) as KitCategoryComponentLink[]
+
+            links.forEach((link) => {
+              kitCategoryCounts.set(
+                link.kit_recipe_id,
+                (kitCategoryCounts.get(link.kit_recipe_id) ?? 0) + 1
+              )
+            })
+          }
         }
 
         if (supplierIds.length > 0) {
@@ -217,6 +244,7 @@ export default function ReceitasPage() {
           setRecipes(recipeRows)
           setPackagingCountByRecipeId(Object.fromEntries(packagingCounts))
           setKitItemCountByRecipeId(Object.fromEntries(kitItemCounts))
+          setKitCategoryCountByRecipeId(Object.fromEntries(kitCategoryCounts))
           setSupplierNameById(Object.fromEntries(supplierNames))
         }
       } catch (err) {
@@ -333,6 +361,8 @@ export default function ReceitasPage() {
               const isKit = productType === 'kit'
               const isThirdParty = recipe.is_third_party === true
               const kitItemCount = kitItemCountByRecipeId[recipe.id] ?? 0
+              const kitCategoryCount = kitCategoryCountByRecipeId[recipe.id] ?? 0
+              const kitComponentCount = kitItemCount + kitCategoryCount
               const supplierName = recipe.supplier_id
                 ? supplierNameById[recipe.supplier_id]
                 : undefined
@@ -407,11 +437,27 @@ export default function ReceitasPage() {
                   {isKit && (
                     <div className="mb-4 rounded-lg bg-[#FAF6F0] p-3 text-sm">
                       <p className="font-semibold text-[#1A0A08]">
-                        {kitItemCount === 1 ? '1 item no kit' : `${kitItemCount} itens no kit`}
+                        {kitComponentCount === 1
+                          ? '1 componente no kit'
+                          : `${kitComponentCount} componentes no kit`}
                       </p>
-                      <p className="mt-1 text-xs text-[#999999]">
-                        Custo calculado pela composicao cadastrada.
-                      </p>
+                      <div className="mt-1 space-y-0.5 text-xs text-[#999999]">
+                        {kitItemCount > 0 && (
+                          <p>
+                            {kitItemCount === 1
+                              ? '1 produto fixo'
+                              : `${kitItemCount} produtos fixos`}
+                          </p>
+                        )}
+                        {kitCategoryCount > 0 && (
+                          <p>
+                            {kitCategoryCount === 1
+                              ? '1 categoria'
+                              : `${kitCategoryCount} categorias`}
+                          </p>
+                        )}
+                        {kitComponentCount === 0 && <p>Composicao ainda nao cadastrada.</p>}
+                      </div>
                     </div>
                   )}
 

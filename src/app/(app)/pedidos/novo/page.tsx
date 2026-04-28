@@ -19,6 +19,7 @@ type SupabaseErrorLike = {
 type Recipe = {
   id: string
   name: string
+  category: string | null
   product_type: ProductType | null
   is_third_party: boolean | null
   supplier_id: string | null
@@ -32,6 +33,14 @@ type ProductKitItem = {
   id: string
   kit_recipe_id: string
   item_recipe_id: string
+  quantity: NumericValue
+  notes: string | null
+}
+
+type KitCategoryComponent = {
+  id: string
+  kit_recipe_id: string
+  category: string
   quantity: NumericValue
   notes: string | null
 }
@@ -64,6 +73,24 @@ type KitSubItem = {
   flavors: FlavorItem[]
 }
 
+type KitCategoryChoice = {
+  localId: string
+  recipe_id: string
+  item_name: string
+  quantity: string
+  notes: string
+  flavors: FlavorItem[]
+}
+
+type KitCategorySubItem = {
+  localId: string
+  component_id: string
+  category: string
+  required_quantity: string
+  notes: string
+  choices: KitCategoryChoice[]
+}
+
 type OrderProductItem = {
   localId: string
   recipe_id: string
@@ -74,6 +101,7 @@ type OrderProductItem = {
   notes: string
   flavors: FlavorItem[]
   kit_subitems: KitSubItem[]
+  kit_category_subitems: KitCategorySubItem[]
 }
 
 type OrderForm = {
@@ -156,6 +184,12 @@ function formatCurrency(value: NumericValue) {
   }).format(parseNumericValue(value))
 }
 
+function formatNumber(value: NumericValue) {
+  return new Intl.NumberFormat('pt-BR', {
+    maximumFractionDigits: 2,
+  }).format(parseNumericValue(value))
+}
+
 function getEffectiveSalePrice(recipe: Recipe) {
   return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
 }
@@ -205,10 +239,16 @@ function buildFlavorPayload(flavors: FlavorItem[]): FlavorPayload | null {
   return payload.length > 0 ? payload : null
 }
 
+function buildCategoryChoiceNotes(category: string, notes: string) {
+  const trimmedNotes = notes.trim()
+  return trimmedNotes ? `Categoria: ${category}\n${trimmedNotes}` : `Categoria: ${category}`
+}
+
 export default function NovoPedidoPage() {
   const [form, setForm] = useState<OrderForm>(initialForm)
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [kitItems, setKitItems] = useState<ProductKitItem[]>([])
+  const [kitCategoryComponents, setKitCategoryComponents] = useState<KitCategoryComponent[]>([])
   const [orderItems, setOrderItems] = useState<OrderProductItem[]>([])
   const [images, setImages] = useState<File[]>([])
   const [isLoadingData, setIsLoadingData] = useState(true)
@@ -237,7 +277,7 @@ export default function NovoPedidoPage() {
         const { data: recipesData, error: recipesError } = await supabase
           .from('recipes')
           .select(
-            'id, name, product_type, is_third_party, supplier_id, sale_price, suggested_price, supplier_cost, supplier_cost_unit'
+            'id, name, category, product_type, is_third_party, supplier_id, sale_price, suggested_price, supplier_cost, supplier_cost_unit'
           )
           .eq('user_id', user.id)
           .order('name', { ascending: true })
@@ -257,9 +297,23 @@ export default function NovoPedidoPage() {
           throw kitItemsError
         }
 
+        const { data: kitCategoryComponentsData, error: kitCategoryComponentsError } =
+          await supabase
+            .from('kit_category_components')
+            .select('id, kit_recipe_id, category, quantity, notes')
+            .eq('user_id', user.id)
+
+        if (kitCategoryComponentsError) {
+          logSupabaseError('Erro Supabase kit_category_components:', kitCategoryComponentsError)
+          throw kitCategoryComponentsError
+        }
+
         if (isMounted) {
           setRecipes((recipesData ?? []) as Recipe[])
           setKitItems((kitItemsData ?? []) as ProductKitItem[])
+          setKitCategoryComponents(
+            (kitCategoryComponentsData ?? []) as KitCategoryComponent[]
+          )
         }
       } catch (err) {
         console.error('Erro ao carregar produtos:', err)
@@ -296,6 +350,33 @@ export default function NovoPedidoPage() {
     return groupedItems
   }, [kitItems])
 
+  const kitCategoryComponentsByKitId = useMemo(() => {
+    const groupedItems = new Map<string, KitCategoryComponent[]>()
+
+    kitCategoryComponents.forEach((item) => {
+      const currentItems = groupedItems.get(item.kit_recipe_id) ?? []
+      groupedItems.set(item.kit_recipe_id, [...currentItems, item])
+    })
+
+    return groupedItems
+  }, [kitCategoryComponents])
+
+  const recipesByCategory = useMemo(() => {
+    const groupedRecipes = new Map<string, Recipe[]>()
+
+    recipes.forEach((recipe) => {
+      if (recipe.product_type === 'kit') return
+
+      const category = recipe.category?.trim()
+      if (!category) return
+
+      const currentRecipes = groupedRecipes.get(category) ?? []
+      groupedRecipes.set(category, [...currentRecipes, recipe])
+    })
+
+    return groupedRecipes
+  }, [recipes])
+
   const orderTotal = useMemo(() => {
     return orderItems.reduce((sum, item) => {
       return sum + parseDecimal(item.quantity) * parseDecimal(item.unit_price)
@@ -323,6 +404,19 @@ export default function NovoPedidoPage() {
     })
   }
 
+  function buildKitCategorySubItems(recipeId: string) {
+    const selectedComponents = kitCategoryComponentsByKitId.get(recipeId) ?? []
+
+    return selectedComponents.map((component) => ({
+      localId: createLocalId(),
+      component_id: component.id,
+      category: component.category,
+      required_quantity: String(parseNumericValue(component.quantity) || 1),
+      notes: component.notes ?? '',
+      choices: [],
+    }))
+  }
+
   function buildOrderItem(recipe: Recipe): OrderProductItem {
     const productType = recipe.product_type === 'kit' ? 'kit' : 'simples'
 
@@ -336,6 +430,26 @@ export default function NovoPedidoPage() {
       notes: '',
       flavors: [],
       kit_subitems: productType === 'kit' ? buildKitSubItems(recipe.id) : [],
+      kit_category_subitems: productType === 'kit' ? buildKitCategorySubItems(recipe.id) : [],
+    }
+  }
+
+  function getCategoryProducts(category: string) {
+    return recipesByCategory.get(category) ?? []
+  }
+
+  function calculateCategoryChosenQuantity(component: KitCategorySubItem) {
+    return component.choices.reduce((sum, choice) => sum + parseDecimal(choice.quantity), 0)
+  }
+
+  function buildCategoryChoice(recipe: Recipe, quantity: string): KitCategoryChoice {
+    return {
+      localId: createLocalId(),
+      recipe_id: recipe.id,
+      item_name: recipe.name,
+      quantity,
+      notes: '',
+      flavors: [],
     }
   }
 
@@ -509,6 +623,220 @@ export default function NovoPedidoPage() {
     )
   }
 
+  function addCategoryChoice(itemLocalId: string, componentLocalId: string) {
+    const item = orderItems.find((currentItem) => currentItem.localId === itemLocalId)
+    const component = item?.kit_category_subitems.find(
+      (currentComponent) => currentComponent.localId === componentLocalId
+    )
+
+    if (!component) return
+
+    const categoryProducts = getCategoryProducts(component.category)
+    const firstProduct = categoryProducts[0]
+
+    if (!firstProduct) {
+      setError(`Cadastre produtos na categoria ${component.category} antes de montar este kit`)
+      return
+    }
+
+    setOrderItems((currentItems) =>
+      currentItems.map((currentItem) => {
+        if (currentItem.localId !== itemLocalId) return currentItem
+
+        return {
+          ...currentItem,
+          kit_category_subitems: currentItem.kit_category_subitems.map((currentComponent) => {
+            if (currentComponent.localId !== componentLocalId) return currentComponent
+
+            const requiredQuantity = parseDecimal(currentComponent.required_quantity)
+            const chosenQuantity = calculateCategoryChosenQuantity(currentComponent)
+            const remainingQuantity = Math.max(requiredQuantity - chosenQuantity, 0)
+            const nextQuantity = remainingQuantity > 0 ? String(remainingQuantity) : '1'
+
+            return {
+              ...currentComponent,
+              choices: [
+                ...currentComponent.choices,
+                buildCategoryChoice(firstProduct, nextQuantity),
+              ],
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function updateCategoryChoice(
+    itemLocalId: string,
+    componentLocalId: string,
+    choiceLocalId: string,
+    field: 'recipe_id' | 'quantity' | 'notes',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_category_subitems: item.kit_category_subitems.map((component) => {
+            if (component.localId !== componentLocalId) return component
+
+            return {
+              ...component,
+              choices: component.choices.map((choice) => {
+                if (choice.localId !== choiceLocalId) return choice
+
+                if (field === 'recipe_id') {
+                  const recipe = recipeById.get(value)
+
+                  return {
+                    ...choice,
+                    recipe_id: value,
+                    item_name: recipe?.name ?? choice.item_name,
+                  }
+                }
+
+                return {
+                  ...choice,
+                  [field]: value,
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function removeCategoryChoice(
+    itemLocalId: string,
+    componentLocalId: string,
+    choiceLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_category_subitems: item.kit_category_subitems.map((component) =>
+            component.localId === componentLocalId
+              ? {
+                  ...component,
+                  choices: component.choices.filter((choice) => choice.localId !== choiceLocalId),
+                }
+              : component
+          ),
+        }
+      })
+    )
+  }
+
+  function addCategoryChoiceFlavor(
+    itemLocalId: string,
+    componentLocalId: string,
+    choiceLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_category_subitems: item.kit_category_subitems.map((component) => {
+            if (component.localId !== componentLocalId) return component
+
+            return {
+              ...component,
+              choices: component.choices.map((choice) =>
+                choice.localId === choiceLocalId
+                  ? {
+                      ...choice,
+                      flavors: [
+                        ...choice.flavors,
+                        { localId: createLocalId(), name: '', quantity: '' },
+                      ],
+                    }
+                  : choice
+              ),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function updateCategoryChoiceFlavor(
+    itemLocalId: string,
+    componentLocalId: string,
+    choiceLocalId: string,
+    flavorLocalId: string,
+    field: 'name' | 'quantity',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_category_subitems: item.kit_category_subitems.map((component) => {
+            if (component.localId !== componentLocalId) return component
+
+            return {
+              ...component,
+              choices: component.choices.map((choice) =>
+                choice.localId === choiceLocalId
+                  ? {
+                      ...choice,
+                      flavors: choice.flavors.map((flavor) =>
+                        flavor.localId === flavorLocalId
+                          ? { ...flavor, [field]: value }
+                          : flavor
+                      ),
+                    }
+                  : choice
+              ),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function removeCategoryChoiceFlavor(
+    itemLocalId: string,
+    componentLocalId: string,
+    choiceLocalId: string,
+    flavorLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_category_subitems: item.kit_category_subitems.map((component) => {
+            if (component.localId !== componentLocalId) return component
+
+            return {
+              ...component,
+              choices: component.choices.map((choice) =>
+                choice.localId === choiceLocalId
+                  ? {
+                      ...choice,
+                      flavors: choice.flavors.filter((flavor) => flavor.localId !== flavorLocalId),
+                    }
+                  : choice
+              ),
+            }
+          }),
+        }
+      })
+    )
+  }
+
   function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
     if (event.target.files) {
       setImages(Array.from(event.target.files))
@@ -528,6 +856,32 @@ export default function NovoPedidoPage() {
     })
   }
 
+  function validateKitCategoryChoices(item: OrderProductItem) {
+    for (const component of item.kit_category_subitems) {
+      const requiredQuantity = parseDecimal(component.required_quantity)
+      const chosenQuantity = calculateCategoryChosenQuantity(component)
+
+      if (Math.abs(chosenQuantity - requiredQuantity) > 0.001) {
+        return `No kit ${item.item_name}, escolha exatamente ${formatNumber(
+          requiredQuantity
+        )} itens de ${component.category}. Selecionado: ${formatNumber(chosenQuantity)}.`
+      }
+
+      const invalidChoice = component.choices.some(
+        (choice) =>
+          !choice.recipe_id ||
+          parseDecimal(choice.quantity) <= 0 ||
+          !validateFlavorList(choice.flavors)
+      )
+
+      if (invalidChoice) {
+        return `Confira produtos, quantidades e sabores da categoria ${component.category}`
+      }
+    }
+
+    return ''
+  }
+
   function validateForm() {
     if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
     if (!form.delivery_date) return 'Data da festa/evento e obrigatoria'
@@ -543,12 +897,25 @@ export default function NovoPedidoPage() {
 
       if (!validateFlavorList(item.flavors)) return true
 
-      return item.kit_subitems.some((subItem) => !validateFlavorList(subItem.flavors))
+      const hasInvalidFixedSubItem = item.kit_subitems.some(
+        (subItem) => !validateFlavorList(subItem.flavors)
+      )
+      if (hasInvalidFixedSubItem) return true
+
+      return item.kit_category_subitems.some((component) =>
+        component.choices.some((choice) => !validateFlavorList(choice.flavors))
+      )
     })
 
     if (invalidItem) {
       return 'Confira produtos, quantidades, precos e sabores do pedido'
     }
+
+    const kitCategoryError = orderItems
+      .map((item) => validateKitCategoryChoices(item))
+      .find((message) => message)
+
+    if (kitCategoryError) return kitCategoryError
 
     return ''
   }
@@ -808,6 +1175,60 @@ export default function NovoPedidoPage() {
               notes: optionalText(subItem.notes),
               parentKitName: item.item_name,
             })
+          }
+        }
+
+        if (item.product_type === 'kit' && item.kit_category_subitems.length > 0) {
+          for (const component of item.kit_category_subitems) {
+            for (const choice of component.choices) {
+              const childQuantity = parseDecimal(choice.quantity) * quantity
+              const childFlavorPayload = buildFlavorPayload(choice.flavors)
+              const childNotes = buildCategoryChoiceNotes(component.category, choice.notes)
+
+              const { data: createdCategoryChildItem, error: categoryChildItemError } =
+                await supabase
+                  .from('order_items')
+                  .insert([
+                    {
+                      user_id: currentUserId,
+                      order_id: orderId,
+                      recipe_id: choice.recipe_id,
+                      parent_order_item_id: createdItem.id,
+                      item_name: choice.item_name,
+                      quantity: childQuantity,
+                      unit_price: 0,
+                      subtotal: 0,
+                      flavor_details: childFlavorPayload,
+                      notes: childNotes,
+                    },
+                  ])
+                  .select('id')
+                  .single()
+
+              if (categoryChildItemError) {
+                logSupabaseError(
+                  'Erro Supabase order_items filho de categoria insert:',
+                  categoryChildItemError
+                )
+                throw categoryChildItemError
+              }
+
+              if (!createdCategoryChildItem?.id) {
+                throw new Error('Subitem de categoria criado sem id retornado pelo Supabase')
+              }
+
+              await createSupplierOrderForThirdPartyItem({
+                userId: currentUserId,
+                orderId,
+                orderItemId: createdCategoryChildItem.id,
+                recipeId: choice.recipe_id,
+                title: choice.item_name,
+                quantity: childQuantity,
+                flavorDetails: childFlavorPayload,
+                notes: childNotes,
+                parentKitName: item.item_name,
+              })
+            }
           }
         }
       }
@@ -1209,95 +1630,326 @@ export default function NovoPedidoPage() {
 
                       {isKit && (
                         <div className="mt-4 space-y-3 rounded-lg bg-white p-3">
-                          <p className="text-sm font-bold text-[#1A0A08]">Subitens do kit</p>
-                          {item.kit_subitems.length === 0 ? (
+                          <p className="text-sm font-bold text-[#1A0A08]">Composicao do kit</p>
+                          {item.kit_subitems.length === 0 &&
+                          item.kit_category_subitems.length === 0 ? (
                             <p className="text-sm text-[#999999]">
                               Este kit nao tem composicao cadastrada.
                             </p>
                           ) : (
-                            item.kit_subitems.map((subItem) => (
-                              <div
-                                key={subItem.localId}
-                                className="rounded-lg border border-[rgba(26,10,8,0.07)] p-3"
-                              >
-                                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                  <div>
-                                    <p className="font-semibold text-[#1A0A08]">
-                                      {subItem.item_name}
-                                    </p>
-                                    <p className="text-xs text-[#999999]">
-                                      Quantidade do kit: {subItem.quantity}
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => addSubItemFlavor(item.localId, subItem.localId)}
-                                    className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
-                                  >
-                                    <Plus size={15} aria-hidden="true" />
-                                    <span>Adicionar sabor</span>
-                                  </button>
-                                </div>
-
-                                {subItem.flavors.length > 0 && (
-                                  <div className="mt-3 space-y-2">
-                                    {subItem.flavors.map((flavor) => (
-                                      <div
-                                        key={flavor.localId}
-                                        className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
-                                      >
-                                        <input
-                                          type="text"
-                                          value={flavor.name}
-                                          onChange={(event) =>
-                                            updateSubItemFlavor(
-                                              item.localId,
-                                              subItem.localId,
-                                              flavor.localId,
-                                              'name',
-                                              event.target.value
-                                            )
-                                          }
-                                          placeholder="Sabor"
-                                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
-                                        />
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          step="0.01"
-                                          value={flavor.quantity}
-                                          onChange={(event) =>
-                                            updateSubItemFlavor(
-                                              item.localId,
-                                              subItem.localId,
-                                              flavor.localId,
-                                              'quantity',
-                                              event.target.value
-                                            )
-                                          }
-                                          placeholder="Qtd."
-                                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
-                                        />
+                            <>
+                              {item.kit_subitems.length > 0 && (
+                                <div className="space-y-3">
+                                  <p className="text-xs font-semibold text-[#999999]">
+                                    Produtos fixos
+                                  </p>
+                                  {item.kit_subitems.map((subItem) => (
+                                    <div
+                                      key={subItem.localId}
+                                      className="rounded-lg border border-[rgba(26,10,8,0.07)] p-3"
+                                    >
+                                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                        <div>
+                                          <p className="font-semibold text-[#1A0A08]">
+                                            {subItem.item_name}
+                                          </p>
+                                          <p className="text-xs text-[#999999]">
+                                            Quantidade do kit: {subItem.quantity}
+                                          </p>
+                                        </div>
                                         <button
                                           type="button"
                                           onClick={() =>
-                                            removeSubItemFlavor(
-                                              item.localId,
-                                              subItem.localId,
-                                              flavor.localId
-                                            )
+                                            addSubItemFlavor(item.localId, subItem.localId)
                                           }
-                                          className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
-                                          aria-label="Remover sabor do subitem"
+                                          className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
                                         >
-                                          <Trash2 size={16} aria-hidden="true" />
+                                          <Plus size={15} aria-hidden="true" />
+                                          <span>Adicionar sabor</span>
                                         </button>
                                       </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))
+
+                                      {subItem.flavors.length > 0 && (
+                                        <div className="mt-3 space-y-2">
+                                          {subItem.flavors.map((flavor) => (
+                                            <div
+                                              key={flavor.localId}
+                                              className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
+                                            >
+                                              <input
+                                                type="text"
+                                                value={flavor.name}
+                                                onChange={(event) =>
+                                                  updateSubItemFlavor(
+                                                    item.localId,
+                                                    subItem.localId,
+                                                    flavor.localId,
+                                                    'name',
+                                                    event.target.value
+                                                  )
+                                                }
+                                                placeholder="Sabor"
+                                                className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                              />
+                                              <input
+                                                type="number"
+                                                min="0"
+                                                step="0.01"
+                                                value={flavor.quantity}
+                                                onChange={(event) =>
+                                                  updateSubItemFlavor(
+                                                    item.localId,
+                                                    subItem.localId,
+                                                    flavor.localId,
+                                                    'quantity',
+                                                    event.target.value
+                                                  )
+                                                }
+                                                placeholder="Qtd."
+                                                className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  removeSubItemFlavor(
+                                                    item.localId,
+                                                    subItem.localId,
+                                                    flavor.localId
+                                                  )
+                                                }
+                                                className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                                aria-label="Remover sabor do subitem"
+                                              >
+                                                <Trash2 size={16} aria-hidden="true" />
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {item.kit_category_subitems.length > 0 && (
+                                <div className="space-y-3">
+                                  <p className="text-xs font-semibold text-[#999999]">
+                                    Categorias escolhidas no pedido
+                                  </p>
+                                  {item.kit_category_subitems.map((component) => {
+                                    const categoryProducts = getCategoryProducts(
+                                      component.category
+                                    )
+                                    const requiredQuantity = parseDecimal(
+                                      component.required_quantity
+                                    )
+                                    const chosenQuantity =
+                                      calculateCategoryChosenQuantity(component)
+
+                                    return (
+                                      <div
+                                        key={component.localId}
+                                        className="rounded-lg border border-[rgba(26,10,8,0.07)] p-3"
+                                      >
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                          <div>
+                                            <p className="font-semibold text-[#1A0A08]">
+                                              {component.category}
+                                            </p>
+                                            <p className="text-xs text-[#999999]">
+                                              Escolhido {formatNumber(chosenQuantity)} /{' '}
+                                              {formatNumber(requiredQuantity)}
+                                            </p>
+                                            {component.notes && (
+                                              <p className="mt-1 text-xs text-[#999999]">
+                                                {component.notes}
+                                              </p>
+                                            )}
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              addCategoryChoice(item.localId, component.localId)
+                                            }
+                                            className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
+                                          >
+                                            <Plus size={15} aria-hidden="true" />
+                                            <span>Adicionar produto desta categoria</span>
+                                          </button>
+                                        </div>
+
+                                        {component.choices.length === 0 ? (
+                                          <p className="mt-3 text-sm text-[#999999]">
+                                            Nenhum produto escolhido.
+                                          </p>
+                                        ) : (
+                                          <div className="mt-3 space-y-3">
+                                            {component.choices.map((choice) => (
+                                              <div
+                                                key={choice.localId}
+                                                className="rounded-lg bg-[#FAF6F0] p-3"
+                                              >
+                                                <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_110px_40px]">
+                                                  <select
+                                                    value={choice.recipe_id}
+                                                    onChange={(event) =>
+                                                      updateCategoryChoice(
+                                                        item.localId,
+                                                        component.localId,
+                                                        choice.localId,
+                                                        'recipe_id',
+                                                        event.target.value
+                                                      )
+                                                    }
+                                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                  >
+                                                    {categoryProducts.map((recipe) => (
+                                                      <option key={recipe.id} value={recipe.id}>
+                                                        {recipe.name}
+                                                      </option>
+                                                    ))}
+                                                  </select>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.01"
+                                                    value={choice.quantity}
+                                                    onChange={(event) =>
+                                                      updateCategoryChoice(
+                                                        item.localId,
+                                                        component.localId,
+                                                        choice.localId,
+                                                        'quantity',
+                                                        event.target.value
+                                                      )
+                                                    }
+                                                    placeholder="Qtd."
+                                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                  />
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      removeCategoryChoice(
+                                                        item.localId,
+                                                        component.localId,
+                                                        choice.localId
+                                                      )
+                                                    }
+                                                    className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                                    aria-label="Remover produto da categoria"
+                                                  >
+                                                    <Trash2 size={16} aria-hidden="true" />
+                                                  </button>
+                                                </div>
+
+                                                <input
+                                                  type="text"
+                                                  value={choice.notes}
+                                                  onChange={(event) =>
+                                                    updateCategoryChoice(
+                                                      item.localId,
+                                                      component.localId,
+                                                      choice.localId,
+                                                      'notes',
+                                                      event.target.value
+                                                    )
+                                                  }
+                                                  placeholder="Observacoes deste produto"
+                                                  className="mt-2 w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                />
+
+                                                <div className="mt-3">
+                                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                                    <p className="text-xs font-semibold text-[#1A0A08]">
+                                                      Sabores/variacoes
+                                                    </p>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        addCategoryChoiceFlavor(
+                                                          item.localId,
+                                                          component.localId,
+                                                          choice.localId
+                                                        )
+                                                      }
+                                                      className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs font-semibold text-[#C0392B]"
+                                                    >
+                                                      <Plus size={13} aria-hidden="true" />
+                                                      <span>Adicionar sabor</span>
+                                                    </button>
+                                                  </div>
+
+                                                  {choice.flavors.length > 0 && (
+                                                    <div className="space-y-2">
+                                                      {choice.flavors.map((flavor) => (
+                                                        <div
+                                                          key={flavor.localId}
+                                                          className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
+                                                        >
+                                                          <input
+                                                            type="text"
+                                                            value={flavor.name}
+                                                            onChange={(event) =>
+                                                              updateCategoryChoiceFlavor(
+                                                                item.localId,
+                                                                component.localId,
+                                                                choice.localId,
+                                                                flavor.localId,
+                                                                'name',
+                                                                event.target.value
+                                                              )
+                                                            }
+                                                            placeholder="Sabor"
+                                                            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                          />
+                                                          <input
+                                                            type="number"
+                                                            min="0"
+                                                            step="0.01"
+                                                            value={flavor.quantity}
+                                                            onChange={(event) =>
+                                                              updateCategoryChoiceFlavor(
+                                                                item.localId,
+                                                                component.localId,
+                                                                choice.localId,
+                                                                flavor.localId,
+                                                                'quantity',
+                                                                event.target.value
+                                                              )
+                                                            }
+                                                            placeholder="Qtd."
+                                                            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                          />
+                                                          <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                              removeCategoryChoiceFlavor(
+                                                                item.localId,
+                                                                component.localId,
+                                                                choice.localId,
+                                                                flavor.localId
+                                                              )
+                                                            }
+                                                            className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                                            aria-label="Remover sabor da categoria"
+                                                          >
+                                                            <Trash2 size={16} aria-hidden="true" />
+                                                          </button>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       )}

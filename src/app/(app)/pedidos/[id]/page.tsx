@@ -157,6 +157,33 @@ function renderFlavors(flavors: FlavorDetail[] | null) {
   )
 }
 
+function parseCategoryNotes(notes: string | null) {
+  if (!notes) {
+    return {
+      category: null,
+      notes: null,
+    }
+  }
+
+  const lines = notes.split('\n')
+  const firstLine = lines[0]?.trim() ?? ''
+
+  if (!firstLine.toLowerCase().startsWith('categoria:')) {
+    return {
+      category: null,
+      notes,
+    }
+  }
+
+  const category = firstLine.replace(/^categoria:/i, '').trim()
+  const remainingNotes = lines.slice(1).join('\n').trim()
+
+  return {
+    category: category || null,
+    notes: remainingNotes || null,
+  }
+}
+
 export default function DetalhesPedidoPage() {
   const [order, setOrder] = useState<Order | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -463,29 +490,44 @@ export default function DetalhesPedidoPage() {
 
                     {childItems.length > 0 && (
                       <div className="mt-4 space-y-3">
-                        <p className="text-sm font-bold text-[#1A0A08]">Subitens do kit</p>
-                        {childItems.map((childItem) => (
-                          <div
-                            key={childItem.id}
-                            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white p-3"
-                          >
-                            <div className="flex justify-between gap-3">
-                              <div>
-                                <p className="font-semibold text-[#1A0A08]">
-                                  {childItem.item_name}
-                                </p>
-                                <p className="text-xs text-[#999999]">
-                                  Quantidade: {formatNumber(childItem.quantity)}
+                        <p className="text-sm font-bold text-[#1A0A08]">
+                          Componentes escolhidos no kit
+                        </p>
+                        {childItems.map((childItem) => {
+                          const parsedNotes = parseCategoryNotes(childItem.notes)
+
+                          return (
+                            <div
+                              key={childItem.id}
+                              className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white p-3"
+                            >
+                              <div className="flex justify-between gap-3">
+                                <div>
+                                  {parsedNotes.category && (
+                                    <p className="mb-1 text-xs font-semibold text-[#C9A84C]">
+                                      {parsedNotes.category}
+                                    </p>
+                                  )}
+                                  <p className="font-semibold text-[#1A0A08]">
+                                    {childItem.item_name}
+                                  </p>
+                                  <p className="text-xs text-[#999999]">
+                                    Quantidade: {formatNumber(childItem.quantity)}
+                                  </p>
+                                </div>
+                                <p className="text-xs font-semibold text-[#999999]">
+                                  Incluso no kit
                                 </p>
                               </div>
-                              <p className="text-xs font-semibold text-[#999999]">Incluso no kit</p>
+                              {parsedNotes.notes && (
+                                <p className="mt-2 text-sm text-[#1A0A08]">
+                                  {parsedNotes.notes}
+                                </p>
+                              )}
+                              {renderFlavors(childItem.flavor_details)}
                             </div>
-                            {childItem.notes && (
-                              <p className="mt-2 text-sm text-[#1A0A08]">{childItem.notes}</p>
-                            )}
-                            {renderFlavors(childItem.flavor_details)}
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </article>

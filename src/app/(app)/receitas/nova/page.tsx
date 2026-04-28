@@ -100,6 +100,13 @@ type RecipeKitItem = {
   notes: string
 }
 
+type KitCategoryComponentItem = {
+  localId: string
+  category: string
+  quantity: string
+  notes: string
+}
+
 const categoryOptions = [
   'Bolos',
   'Tortas',
@@ -107,6 +114,15 @@ const categoryOptions = [
   'Salgados',
   'Bebidas',
   'Sobremesas',
+  'Outros',
+]
+
+const kitCategoryOptions = [
+  'Bolos',
+  'Doces tradicionais',
+  'Doces finos',
+  'Salgados tradicionais',
+  'Salgados finos',
   'Outros',
 ]
 
@@ -318,6 +334,9 @@ export default function NovaReceitaPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [availableKitProducts, setAvailableKitProducts] = useState<KitProduct[]>([])
   const [recipeKitItems, setRecipeKitItems] = useState<RecipeKitItem[]>([])
+  const [kitCategoryComponents, setKitCategoryComponents] = useState<KitCategoryComponentItem[]>(
+    []
+  )
   const [isLoadingIngredients, setIsLoadingIngredients] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -676,6 +695,41 @@ export default function NovaReceitaPage() {
     setRecipeKitItems((currentItems) => currentItems.filter((item) => item.localId !== localId))
   }
 
+  function addKitCategoryComponent() {
+    setKitCategoryComponents((currentItems) => [
+      ...currentItems,
+      {
+        localId: createLocalId(),
+        category: kitCategoryOptions[0],
+        quantity: '1',
+        notes: '',
+      },
+    ])
+  }
+
+  function updateKitCategoryComponent(
+    localId: string,
+    field: 'category' | 'quantity' | 'notes',
+    value: string
+  ) {
+    setKitCategoryComponents((currentItems) =>
+      currentItems.map((item) =>
+        item.localId === localId
+          ? {
+              ...item,
+              [field]: value,
+            }
+          : item
+      )
+    )
+  }
+
+  function removeKitCategoryComponent(localId: string) {
+    setKitCategoryComponents((currentItems) =>
+      currentItems.filter((item) => item.localId !== localId)
+    )
+  }
+
   function validateForm() {
     if (!form.name.trim()) return 'Nome da receita é obrigatório'
     if (yieldAmount <= 0) return 'Rendimento deve ser maior que zero'
@@ -687,7 +741,9 @@ export default function NovaReceitaPage() {
       return 'Preço que eu cobro deve ser um valor válido'
     }
     if (isKit) {
-      if (recipeKitItems.length === 0) return 'Adicione pelo menos um item ao kit'
+      if (recipeKitItems.length === 0 && kitCategoryComponents.length === 0) {
+        return 'Adicione pelo menos um produto fixo ou uma categoria ao kit'
+      }
 
       const invalidKitItem = recipeKitItems.some(
         (item) => !item.item_recipe_id || parseDecimal(item.quantity) <= 0
@@ -695,6 +751,14 @@ export default function NovaReceitaPage() {
 
       if (invalidKitItem) {
         return 'Confira produto e quantidade de todos os itens do kit'
+      }
+
+      const invalidCategoryComponent = kitCategoryComponents.some(
+        (item) => !item.category.trim() || parseDecimal(item.quantity) <= 0
+      )
+
+      if (invalidCategoryComponent) {
+        return 'Confira categoria e quantidade de todos os componentes por categoria'
       }
 
       return ''
@@ -794,21 +858,42 @@ export default function NovaReceitaPage() {
       }
 
       if (isKit) {
-        const kitItemsPayload = recipeKitItems.map((item) => ({
-          user_id: user.id,
-          kit_recipe_id: createdRecipe.id,
-          item_recipe_id: item.item_recipe_id,
-          quantity: parseDecimal(item.quantity),
-          notes: optionalText(item.notes),
-        }))
+        if (recipeKitItems.length > 0) {
+          const kitItemsPayload = recipeKitItems.map((item) => ({
+            user_id: user.id,
+            kit_recipe_id: createdRecipe.id,
+            item_recipe_id: item.item_recipe_id,
+            quantity: parseDecimal(item.quantity),
+            notes: optionalText(item.notes),
+          }))
 
-        const { error: kitItemsError } = await supabase
-          .from('product_kit_items')
-          .insert(kitItemsPayload)
+          const { error: kitItemsError } = await supabase
+            .from('product_kit_items')
+            .insert(kitItemsPayload)
 
-        if (kitItemsError) {
-          logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
-          throw kitItemsError
+          if (kitItemsError) {
+            logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
+            throw kitItemsError
+          }
+        }
+
+        if (kitCategoryComponents.length > 0) {
+          const categoryComponentsPayload = kitCategoryComponents.map((item) => ({
+            user_id: user.id,
+            kit_recipe_id: createdRecipe.id,
+            category: item.category.trim(),
+            quantity: parseDecimal(item.quantity),
+            notes: optionalText(item.notes),
+          }))
+
+          const { error: categoryComponentsError } = await supabase
+            .from('kit_category_components')
+            .insert(categoryComponentsPayload)
+
+          if (categoryComponentsError) {
+            logSupabaseError('Erro Supabase kit_category_components:', categoryComponentsError)
+            throw categoryComponentsError
+          }
         }
       } else if (isSimpleInternal) {
         const recipeIngredientsPayload = recipeIngredients.map((item) => ({
@@ -1139,110 +1224,259 @@ export default function NovaReceitaPage() {
 
           {isKit && (
             <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mb-5">
                 <div>
                   <h2 className="text-lg font-bold text-[#1A0A08]">Composicao do kit</h2>
                   <p className="mt-1 text-sm text-[#999999]">
-                    Selecione produtos ja cadastrados e informe a quantidade de cada item.
+                    Combine produtos fixos e categorias que serao escolhidas no pedido.
                   </p>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={addKitItem}
-                  disabled={isLoadingIngredients || availableKitProducts.length === 0}
-                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <Plus size={18} aria-hidden="true" />
-                  <span>Adicionar item</span>
-                </button>
               </div>
 
-              {isLoadingIngredients ? (
-                <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
-                  Carregando produtos...
-                </div>
-              ) : availableKitProducts.length === 0 ? (
-                <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
-                  Nenhum produto cadastrado ainda. Cadastre produtos simples antes de montar um kit.
-                </div>
-              ) : recipeKitItems.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
-                  Adicione o primeiro produto para calcular o custo do kit.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {recipeKitItems.map((item, index) => {
-                    const selectedProduct = kitProductById.get(item.item_recipe_id)
-                    const selectedProductCost = selectedProduct
-                      ? getKitProductBaseCost(selectedProduct)
-                      : 0
-                    const itemCost = kitItemCosts.get(item.localId) ?? 0
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-bold text-[#1A0A08]">Produtos fixos</h3>
+                      <p className="mt-1 text-sm text-[#999999]">
+                        Itens definidos no cadastro e incluidos automaticamente no kit.
+                      </p>
+                    </div>
 
-                    return (
-                      <div
-                        key={item.localId}
-                        className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
-                      >
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <p className="text-sm font-bold text-[#1A0A08]">Item {index + 1}</p>
-                          <button
-                            type="button"
-                            onClick={() => removeKitItem(item.localId)}
-                            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
-                            aria-label="Remover item do kit"
+                    <button
+                      type="button"
+                      onClick={addKitItem}
+                      disabled={isLoadingIngredients || availableKitProducts.length === 0}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Plus size={18} aria-hidden="true" />
+                      <span>Adicionar produto</span>
+                    </button>
+                  </div>
+
+                  {isLoadingIngredients ? (
+                    <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
+                      Carregando produtos...
+                    </div>
+                  ) : availableKitProducts.length === 0 ? (
+                    <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
+                      Nenhum produto cadastrado ainda. Cadastre produtos simples antes de montar um
+                      kit.
+                    </div>
+                  ) : recipeKitItems.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                      Nenhum produto fixo adicionado.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {recipeKitItems.map((item, index) => {
+                        const selectedProduct = kitProductById.get(item.item_recipe_id)
+                        const selectedProductCost = selectedProduct
+                          ? getKitProductBaseCost(selectedProduct)
+                          : 0
+                        const itemCost = kitItemCosts.get(item.localId) ?? 0
+
+                        return (
+                          <div
+                            key={item.localId}
+                            className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
                           >
-                            <Trash2 size={17} aria-hidden="true" />
-                          </button>
-                        </div>
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <p className="text-sm font-bold text-[#1A0A08]">
+                                Produto fixo {index + 1}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => removeKitItem(item.localId)}
+                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                                aria-label="Remover produto fixo do kit"
+                              >
+                                <Trash2 size={17} aria-hidden="true" />
+                              </button>
+                            </div>
 
-                        <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.5fr)_120px_150px] md:items-end">
-                          <div>
-                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
-                              Produto
-                            </label>
-                            <select
-                              value={item.item_recipe_id}
-                              onChange={(event) =>
-                                updateKitItem(item.localId, 'item_recipe_id', event.target.value)
-                              }
-                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
-                            >
-                              {availableKitProducts.map((product) => (
-                                <option key={product.id} value={product.id}>
-                                  {product.name}
-                                </option>
-                              ))}
-                            </select>
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.5fr)_120px_150px] md:items-end">
+                              <div>
+                                <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                  Produto
+                                </label>
+                                <select
+                                  value={item.item_recipe_id}
+                                  onChange={(event) =>
+                                    updateKitItem(
+                                      item.localId,
+                                      'item_recipe_id',
+                                      event.target.value
+                                    )
+                                  }
+                                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                                >
+                                  {availableKitProducts.map((product) => (
+                                    <option key={product.id} value={product.id}>
+                                      {product.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                  Quantidade
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  inputMode="decimal"
+                                  value={item.quantity}
+                                  onChange={(event) =>
+                                    updateKitItem(item.localId, 'quantity', event.target.value)
+                                  }
+                                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                                />
+                              </div>
+
+                              <div className="rounded-lg bg-white p-3">
+                                <p className="text-xs font-medium text-[#999999]">
+                                  Custo estimado
+                                </p>
+                                <p className="mt-1 font-bold text-[#1A0A08]">
+                                  {formatCurrency(itemCost)}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                              <div>
+                                <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                  Observacoes
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.notes}
+                                  onChange={(event) =>
+                                    updateKitItem(item.localId, 'notes', event.target.value)
+                                  }
+                                  placeholder="Ex: cliente escolhe os sabores no pedido"
+                                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                                />
+                              </div>
+
+                              <div className="rounded-lg bg-white p-3">
+                                <p className="text-xs font-medium text-[#999999]">
+                                  Custo do produto
+                                </p>
+                                <p className="mt-1 font-bold text-[#1A0A08]">
+                                  {formatCurrency(selectedProductCost)}
+                                </p>
+                                {selectedProduct?.is_third_party && (
+                                  <p className="mt-1 text-xs text-[#999999]">
+                                    Custo do fornecedor
+                                    {selectedProduct.supplier_cost_unit
+                                      ? ` / ${selectedProduct.supplier_cost_unit}`
+                                      : ''}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
                           </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
 
-                          <div>
-                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
-                              Quantidade
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              inputMode="decimal"
-                              value={item.quantity}
-                              onChange={(event) =>
-                                updateKitItem(item.localId, 'quantity', event.target.value)
-                              }
-                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
-                            />
-                          </div>
+                <div className="border-t border-[rgba(26,10,8,0.07)] pt-5">
+                  <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-bold text-[#1A0A08]">Categorias do kit</h3>
+                      <p className="mt-1 text-sm text-[#999999]">
+                        O produto exato sera escolhido quando o pedido for montado.
+                      </p>
+                    </div>
 
-                          <div className="rounded-lg bg-white p-3">
-                            <p className="text-xs font-medium text-[#999999]">Custo estimado</p>
-                            <p className="mt-1 font-bold text-[#1A0A08]">
-                              {formatCurrency(itemCost)}
+                    <button
+                      type="button"
+                      onClick={addKitCategoryComponent}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
+                    >
+                      <Plus size={18} aria-hidden="true" />
+                      <span>Adicionar categoria</span>
+                    </button>
+                  </div>
+
+                  {kitCategoryComponents.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                      Nenhuma categoria adicionada.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {kitCategoryComponents.map((item, index) => (
+                        <div
+                          key={item.localId}
+                          className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                        >
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-bold text-[#1A0A08]">
+                              Categoria {index + 1}
                             </p>
+                            <button
+                              type="button"
+                              onClick={() => removeKitCategoryComponent(item.localId)}
+                              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                              aria-label="Remover categoria do kit"
+                            >
+                              <Trash2 size={17} aria-hidden="true" />
+                            </button>
                           </div>
-                        </div>
 
-                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
-                          <div>
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_120px] md:items-end">
+                            <div>
+                              <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                Categoria
+                              </label>
+                              <select
+                                value={item.category}
+                                onChange={(event) =>
+                                  updateKitCategoryComponent(
+                                    item.localId,
+                                    'category',
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                              >
+                                {kitCategoryOptions.map((category) => (
+                                  <option key={category} value={category}>
+                                    {category}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                Quantidade
+                              </label>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                value={item.quantity}
+                                onChange={(event) =>
+                                  updateKitCategoryComponent(
+                                    item.localId,
+                                    'quantity',
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="mt-3">
                             <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
                               Observacoes
                             </label>
@@ -1250,33 +1484,22 @@ export default function NovaReceitaPage() {
                               type="text"
                               value={item.notes}
                               onChange={(event) =>
-                                updateKitItem(item.localId, 'notes', event.target.value)
+                                updateKitCategoryComponent(
+                                  item.localId,
+                                  'notes',
+                                  event.target.value
+                                )
                               }
-                              placeholder="Ex: cliente escolhe os sabores no pedido"
+                              placeholder="Ex: cliente escolhe os doces no pedido"
                               className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                             />
                           </div>
-
-                          <div className="rounded-lg bg-white p-3">
-                            <p className="text-xs font-medium text-[#999999]">Custo do produto</p>
-                            <p className="mt-1 font-bold text-[#1A0A08]">
-                              {formatCurrency(selectedProductCost)}
-                            </p>
-                            {selectedProduct?.is_third_party && (
-                              <p className="mt-1 text-xs text-[#999999]">
-                                Custo do fornecedor
-                                {selectedProduct.supplier_cost_unit
-                                  ? ` / ${selectedProduct.supplier_cost_unit}`
-                                  : ''}
-                              </p>
-                            )}
-                          </div>
                         </div>
-                      </div>
-                    )
-                  })}
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </section>
           )}
 
@@ -1602,10 +1825,15 @@ export default function NovaReceitaPage() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {isKit ? (
                 <div className="rounded-lg bg-[#FAF6F0] p-4">
-                  <p className="text-xs font-medium text-[#999999]">Custo dos itens do kit</p>
+                  <p className="text-xs font-medium text-[#999999]">Custo dos produtos fixos</p>
                   <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
                     {formatCurrency(kitTotalCost)}
                   </p>
+                  {kitCategoryComponents.length > 0 && (
+                    <p className="mt-1 text-xs text-[#999999]">
+                      Categorias entram como custo 0 ate a escolha no pedido.
+                    </p>
+                  )}
                 </div>
               ) : isSimpleThirdParty ? (
                 <div className="rounded-lg bg-[#FAF6F0] p-4">
