@@ -20,6 +20,8 @@ type Recipe = {
   id: string
   name: string
   product_type: ProductType | null
+  is_third_party: boolean | null
+  supplier_id: string | null
   sale_price: NumericValue
   suggested_price: NumericValue
 }
@@ -36,6 +38,18 @@ type FlavorItem = {
   localId: string
   name: string
   quantity: string
+}
+
+type FlavorPayload = {
+  name: string
+  quantity: number
+}[]
+
+type SupplierOrderDetails = {
+  flavor_details: FlavorPayload | null
+  customer_name: string
+  source_item: string
+  parent_kit?: string
 }
 
 type KitSubItem = {
@@ -157,7 +171,7 @@ function logSupabaseError(context: string, error: unknown) {
   })
 }
 
-function buildFlavorPayload(flavors: FlavorItem[]) {
+function buildFlavorPayload(flavors: FlavorItem[]): FlavorPayload | null {
   const payload = flavors
     .map((flavor) => ({
       name: flavor.name.trim(),
@@ -199,7 +213,7 @@ export default function NovoPedidoPage() {
 
         const { data: recipesData, error: recipesError } = await supabase
           .from('recipes')
-          .select('id, name, product_type, sale_price, suggested_price')
+          .select('id, name, product_type, is_third_party, supplier_id, sale_price, suggested_price')
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
@@ -534,6 +548,52 @@ export default function NovoPedidoPage() {
     return uploadedPaths
   }
 
+  async function createSupplierOrderForThirdPartyItem(params: {
+    userId: string
+    orderId: string
+    orderItemId: string
+    recipeId: string
+    title: string
+    quantity: number
+    flavorDetails: FlavorPayload | null
+    notes: string | null
+    parentKitName?: string
+  }) {
+    const recipe = recipeById.get(params.recipeId)
+
+    if (!recipe?.is_third_party || !recipe.supplier_id) return
+
+    const details: SupplierOrderDetails = {
+      flavor_details: params.flavorDetails,
+      customer_name: form.customer_name.trim(),
+      source_item: params.title,
+      ...(params.parentKitName ? { parent_kit: params.parentKitName } : {}),
+    }
+
+    const { error: supplierOrderError } = await supabase.from('supplier_orders').insert([
+      {
+        user_id: params.userId,
+        supplier_id: recipe.supplier_id,
+        customer_order_id: params.orderId,
+        order_item_id: params.orderItemId,
+        title: params.title,
+        quantity: params.quantity,
+        unit: 'unidades',
+        due_date: form.delivery_date || null,
+        status: 'pendente',
+        details,
+        notes: params.notes,
+      },
+    ])
+
+    if (supplierOrderError) {
+      logSupabaseError('Erro Supabase supplier_orders insert:', supplierOrderError)
+      throw new Error(
+        'Falha ao gerar pedido para fornecedor. Verifique se a migration supplier_orders foi aplicada no Supabase.'
+      )
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -663,25 +723,63 @@ export default function NovoPedidoPage() {
           throw new Error('Item de pedido criado sem id retornado pelo Supabase')
         }
 
+        if (item.product_type !== 'kit') {
+          await createSupplierOrderForThirdPartyItem({
+            userId: currentUserId,
+            orderId,
+            orderItemId: createdItem.id,
+            recipeId: item.recipe_id,
+            title: item.item_name,
+            quantity,
+            flavorDetails: flavorPayload,
+            notes: optionalText(item.notes),
+          })
+        }
+
         if (item.product_type === 'kit' && item.kit_subitems.length > 0) {
-          const childItems = item.kit_subitems.map((subItem) => ({
-            user_id: currentUserId,
-            order_id: orderId,
-            recipe_id: subItem.recipe_id,
-            parent_order_item_id: createdItem.id,
-            item_name: subItem.item_name,
-            quantity: parseDecimal(subItem.quantity),
-            unit_price: 0,
-            subtotal: 0,
-            flavor_details: buildFlavorPayload(subItem.flavors),
-            notes: optionalText(subItem.notes),
-          }))
+          for (const subItem of item.kit_subitems) {
+            const childQuantity = parseDecimal(subItem.quantity) * quantity
+            const childFlavorPayload = buildFlavorPayload(subItem.flavors)
 
-          const { error: childItemsError } = await supabase.from('order_items').insert(childItems)
+            const { data: createdChildItem, error: childItemError } = await supabase
+              .from('order_items')
+              .insert([
+                {
+                  user_id: currentUserId,
+                  order_id: orderId,
+                  recipe_id: subItem.recipe_id,
+                  parent_order_item_id: createdItem.id,
+                  item_name: subItem.item_name,
+                  quantity: childQuantity,
+                  unit_price: 0,
+                  subtotal: 0,
+                  flavor_details: childFlavorPayload,
+                  notes: optionalText(subItem.notes),
+                },
+              ])
+              .select('id')
+              .single()
 
-          if (childItemsError) {
-            logSupabaseError('Erro Supabase order_items filhos insert:', childItemsError)
-            throw childItemsError
+            if (childItemError) {
+              logSupabaseError('Erro Supabase order_items filho insert:', childItemError)
+              throw childItemError
+            }
+
+            if (!createdChildItem?.id) {
+              throw new Error('Subitem de pedido criado sem id retornado pelo Supabase')
+            }
+
+            await createSupplierOrderForThirdPartyItem({
+              userId: currentUserId,
+              orderId,
+              orderItemId: createdChildItem.id,
+              recipeId: subItem.recipe_id,
+              title: subItem.item_name,
+              quantity: childQuantity,
+              flavorDetails: childFlavorPayload,
+              notes: optionalText(subItem.notes),
+              parentKitName: item.item_name,
+            })
           }
         }
       }

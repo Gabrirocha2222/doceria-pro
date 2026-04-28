@@ -20,6 +20,7 @@ const menuItems = [
   { href: '/ingredientes', label: 'Ingredientes', icon: '🧂', id: 'ingredientes' },
   { href: '/embalagens', label: 'Embalagens', icon: '📦', id: 'embalagens' },
   { href: '/fornecedores', label: 'Fornecedores', icon: '🚚', id: 'fornecedores' },
+  { href: '/pedidos-fornecedores', label: 'Pedidos fornecedores', icon: 'PF', id: 'pedidos-fornecedores' },
   { href: '/clientes', label: 'Clientes', icon: '👩', id: 'clientes' },
   { href: '/lista-compras', label: 'Lista de compras', icon: '🛒', id: 'lista-compras' },
   { href: '/financeiro', label: 'Financeiro', icon: '💰', id: 'financeiro' },
@@ -64,7 +65,7 @@ export default function AppLayout({
     router.push('/pedidos/novo')
   }
 
-  const isActive = (href: string) => pathname === href
+  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`)
 
   return (
     <div className="min-h-screen bg-[#FAF6F0] flex flex-col lg:flex-row">
