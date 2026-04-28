@@ -15,9 +15,15 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
+type ProductType = 'simples' | 'kit'
+type ThirdPartyChoice = 'nao' | 'sim'
+
 type RecipeForm = {
   name: string
   category: string
+  product_type: ProductType
+  is_third_party: ThirdPartyChoice
+  supplier_id: string
   yield_amount: string
   yield_unit: string
   profit_margin: string
@@ -70,6 +76,25 @@ type Packaging = {
   capacity_unit: string | null
 }
 
+type Supplier = {
+  id: string
+  name: string
+}
+
+type KitProduct = {
+  id: string
+  name: string
+  total_cost: NumericValue
+  product_type: ProductType | null
+}
+
+type RecipeKitItem = {
+  localId: string
+  item_recipe_id: string
+  quantity: string
+  notes: string
+}
+
 const categoryOptions = [
   'Bolos',
   'Tortas',
@@ -112,6 +137,9 @@ const unitDefinitions: Record<string, UnitDefinition> = {
 const initialForm: RecipeForm = {
   name: '',
   category: 'Bolos',
+  product_type: 'simples',
+  is_third_party: 'nao',
+  supplier_id: '',
   yield_amount: '',
   yield_unit: 'unidades',
   profit_margin: '30',
@@ -164,11 +192,11 @@ function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
 
-function formatCurrency(value: number) {
+function formatCurrency(value: NumericValue) {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
     currency: 'BRL',
-  }).format(value)
+  }).format(parseNumericValue(value))
 }
 
 function formatNumber(value: NumericValue) {
@@ -251,12 +279,26 @@ function calculatePackagingItemCost(
   return quantityPerRecipeUnit * costPerUnit * recipeYield
 }
 
+function calculateKitItemCost(item: RecipeKitItem, product: KitProduct | undefined) {
+  if (!product) return 0
+
+  const quantity = parseDecimal(item.quantity)
+  const itemCost = parseNumericValue(product.total_cost)
+
+  if (quantity <= 0 || itemCost <= 0) return 0
+
+  return quantity * itemCost
+}
+
 export default function NovaReceitaPage() {
   const [form, setForm] = useState<RecipeForm>(initialForm)
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredientItem[]>([])
   const [availablePackaging, setAvailablePackaging] = useState<Packaging[]>([])
   const [recipePackaging, setRecipePackaging] = useState<RecipePackagingItem[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [availableKitProducts, setAvailableKitProducts] = useState<KitProduct[]>([])
+  const [recipeKitItems, setRecipeKitItems] = useState<RecipeKitItem[]>([])
   const [isLoadingIngredients, setIsLoadingIngredients] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -302,9 +344,33 @@ export default function NovaReceitaPage() {
           throw packagingError
         }
 
+        const { data: suppliersData, error: suppliersError } = await supabase
+          .from('suppliers')
+          .select('id, name')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (suppliersError) {
+          logSupabaseError('Erro Supabase suppliers:', suppliersError)
+          throw suppliersError
+        }
+
+        const { data: kitProductsData, error: kitProductsError } = await supabase
+          .from('recipes')
+          .select('id, name, total_cost, product_type')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (kitProductsError) {
+          logSupabaseError('Erro Supabase recipes para kit:', kitProductsError)
+          throw kitProductsError
+        }
+
         if (isMounted) {
           setIngredients((data ?? []) as Ingredient[])
           setAvailablePackaging((packagingData ?? []) as Packaging[])
+          setSuppliers((suppliersData ?? []) as Supplier[])
+          setAvailableKitProducts((kitProductsData ?? []) as KitProduct[])
         }
       } catch (err) {
         console.error('Erro ao carregar ingredientes:', err)
@@ -333,6 +399,12 @@ export default function NovaReceitaPage() {
     return new Map(availablePackaging.map((packaging) => [packaging.id, packaging]))
   }, [availablePackaging])
 
+  const kitProductById = useMemo(() => {
+    return new Map(availableKitProducts.map((product) => [product.id, product]))
+  }, [availableKitProducts])
+
+  const isKit = form.product_type === 'kit'
+  const isThirdParty = form.is_third_party === 'sim'
   const yieldAmount = useMemo(() => parseDecimal(form.yield_amount), [form.yield_amount])
   const profitMargin = useMemo(() => parseDecimal(form.profit_margin), [form.profit_margin])
   const salePrice = useMemo(() => optionalDecimal(form.sale_price), [form.sale_price])
@@ -363,7 +435,21 @@ export default function NovaReceitaPage() {
     return Array.from(packagingCosts.values()).reduce((sum, cost) => sum + cost, 0)
   }, [packagingCosts])
 
-  const totalCost = ingredientTotalCost + packagingTotalCost
+  const kitItemCosts = useMemo(() => {
+    return new Map(
+      recipeKitItems.map((item) => [
+        item.localId,
+        calculateKitItemCost(item, kitProductById.get(item.item_recipe_id)),
+      ])
+    )
+  }, [kitProductById, recipeKitItems])
+
+  const kitTotalCost = useMemo(() => {
+    return Array.from(kitItemCosts.values()).reduce((sum, cost) => sum + cost, 0)
+  }, [kitItemCosts])
+
+  const simpleTotalCost = ingredientTotalCost + packagingTotalCost
+  const totalCost = isKit ? kitTotalCost : simpleTotalCost
   const costPerUnit = yieldAmount > 0 ? totalCost / yieldAmount : 0
   const suggestedPrice = calculateSuggestedPrice(totalCost, profitMargin)
 
@@ -371,10 +457,37 @@ export default function NovaReceitaPage() {
     event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) {
     const field = event.target.name as keyof RecipeForm
+    const value = event.target.value
+
+    if (field === 'product_type') {
+      const productType: ProductType = value === 'kit' ? 'kit' : 'simples'
+
+      setForm((currentForm) => ({
+        ...currentForm,
+        product_type: productType,
+        yield_amount:
+          productType === 'kit' && !currentForm.yield_amount ? '1' : currentForm.yield_amount,
+        yield_unit: productType === 'kit' && !currentForm.yield_unit ? 'kit' : currentForm.yield_unit,
+      }))
+
+      return
+    }
+
+    if (field === 'is_third_party') {
+      const thirdPartyChoice: ThirdPartyChoice = value === 'sim' ? 'sim' : 'nao'
+
+      setForm((currentForm) => ({
+        ...currentForm,
+        is_third_party: thirdPartyChoice,
+        supplier_id: thirdPartyChoice === 'sim' ? currentForm.supplier_id : '',
+      }))
+
+      return
+    }
 
     setForm((currentForm) => ({
       ...currentForm,
-      [field]: event.target.value,
+      [field]: value,
     }))
   }
 
@@ -486,6 +599,46 @@ export default function NovaReceitaPage() {
     )
   }
 
+  function addKitItem() {
+    const firstProduct = availableKitProducts[0]
+
+    if (!firstProduct) {
+      setError('Cadastre produtos antes de montar um kit')
+      return
+    }
+
+    setRecipeKitItems((currentItems) => [
+      ...currentItems,
+      {
+        localId: createLocalId(),
+        item_recipe_id: firstProduct.id,
+        quantity: '1',
+        notes: '',
+      },
+    ])
+  }
+
+  function updateKitItem(
+    localId: string,
+    field: 'item_recipe_id' | 'quantity' | 'notes',
+    value: string
+  ) {
+    setRecipeKitItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== localId) return item
+
+        return {
+          ...item,
+          [field]: value,
+        }
+      })
+    )
+  }
+
+  function removeKitItem(localId: string) {
+    setRecipeKitItems((currentItems) => currentItems.filter((item) => item.localId !== localId))
+  }
+
   function validateForm() {
     if (!form.name.trim()) return 'Nome da receita é obrigatório'
     if (yieldAmount <= 0) return 'Rendimento deve ser maior que zero'
@@ -496,6 +649,28 @@ export default function NovaReceitaPage() {
     if (form.sale_price.trim() && (salePrice === null || salePrice < 0)) {
       return 'Preço que eu cobro deve ser um valor válido'
     }
+    if (
+      isThirdParty &&
+      form.supplier_id &&
+      !suppliers.some((supplier) => supplier.id === form.supplier_id)
+    ) {
+      return 'Selecione um fornecedor valido'
+    }
+
+    if (isKit) {
+      if (recipeKitItems.length === 0) return 'Adicione pelo menos um item ao kit'
+
+      const invalidKitItem = recipeKitItems.some(
+        (item) => !item.item_recipe_id || parseDecimal(item.quantity) <= 0
+      )
+
+      if (invalidKitItem) {
+        return 'Confira produto e quantidade de todos os itens do kit'
+      }
+
+      return ''
+    }
+
     if (recipeIngredients.length === 0) return 'Adicione pelo menos um ingrediente'
 
     const invalidIngredient = recipeIngredients.some(
@@ -548,6 +723,9 @@ export default function NovaReceitaPage() {
             user_id: user.id,
             name: form.name.trim(),
             category: form.category,
+            product_type: form.product_type,
+            is_third_party: isThirdParty,
+            supplier_id: isThirdParty ? optionalText(form.supplier_id) : null,
             yield_amount: yieldAmount,
             yield_unit: form.yield_unit.trim(),
             total_cost: totalCost,
@@ -571,45 +749,64 @@ export default function NovaReceitaPage() {
         throw new Error('Receita criada sem id retornado pelo Supabase')
       }
 
-      const recipeIngredientsPayload = recipeIngredients.map((item) => ({
-        recipe_id: createdRecipe.id,
-        ingredient_id: item.ingredient_id,
-        quantity: parseDecimal(item.quantity),
-        unit: item.unit.trim(),
-      }))
-
-      const { error: recipeIngredientsError } = await supabase
-        .from('recipe_ingredients')
-        .insert(recipeIngredientsPayload)
-
-      if (recipeIngredientsError) {
-        console.error(
-          'Erro Supabase recipe_ingredients:',
-          JSON.stringify(recipeIngredientsError, null, 2)
-        )
-        throw recipeIngredientsError
-      }
-
-      if (recipePackaging.length > 0) {
-        const recipePackagingPayload = recipePackaging.map((item) => ({
+      if (isKit) {
+        const kitItemsPayload = recipeKitItems.map((item) => ({
           user_id: user.id,
-          recipe_id: createdRecipe.id,
-          packaging_id: item.packaging_id,
-          usage_type: item.usage_type,
-          quantity_per_recipe_unit:
-            item.usage_type === 'unitaria'
-              ? parseDecimal(item.quantity_per_recipe_unit)
-              : null,
+          kit_recipe_id: createdRecipe.id,
+          item_recipe_id: item.item_recipe_id,
+          quantity: parseDecimal(item.quantity),
           notes: optionalText(item.notes),
         }))
 
-        const { error: recipePackagingError } = await supabase
-          .from('recipe_packaging')
-          .insert(recipePackagingPayload)
+        const { error: kitItemsError } = await supabase
+          .from('product_kit_items')
+          .insert(kitItemsPayload)
 
-        if (recipePackagingError) {
-          logSupabaseError('Erro Supabase recipe_packaging:', recipePackagingError)
-          throw recipePackagingError
+        if (kitItemsError) {
+          logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
+          throw kitItemsError
+        }
+      } else {
+        const recipeIngredientsPayload = recipeIngredients.map((item) => ({
+          recipe_id: createdRecipe.id,
+          ingredient_id: item.ingredient_id,
+          quantity: parseDecimal(item.quantity),
+          unit: item.unit.trim(),
+        }))
+
+        const { error: recipeIngredientsError } = await supabase
+          .from('recipe_ingredients')
+          .insert(recipeIngredientsPayload)
+
+        if (recipeIngredientsError) {
+          console.error(
+            'Erro Supabase recipe_ingredients:',
+            JSON.stringify(recipeIngredientsError, null, 2)
+          )
+          throw recipeIngredientsError
+        }
+
+        if (recipePackaging.length > 0) {
+          const recipePackagingPayload = recipePackaging.map((item) => ({
+            user_id: user.id,
+            recipe_id: createdRecipe.id,
+            packaging_id: item.packaging_id,
+            usage_type: item.usage_type,
+            quantity_per_recipe_unit:
+              item.usage_type === 'unitaria'
+                ? parseDecimal(item.quantity_per_recipe_unit)
+                : null,
+            notes: optionalText(item.notes),
+          }))
+
+          const { error: recipePackagingError } = await supabase
+            .from('recipe_packaging')
+            .insert(recipePackagingPayload)
+
+          if (recipePackagingError) {
+            logSupabaseError('Erro Supabase recipe_packaging:', recipePackagingError)
+            throw recipePackagingError
+          }
         }
       }
 
@@ -690,6 +887,78 @@ export default function NovaReceitaPage() {
                 </select>
               </div>
 
+              <div>
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="product_type"
+                >
+                  Tipo de produto
+                </label>
+                <select
+                  id="product_type"
+                  name="product_type"
+                  value={form.product_type}
+                  onChange={handleFormChange}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                >
+                  <option value="simples">Produto simples</option>
+                  <option value="kit">Kit</option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="is_third_party"
+                >
+                  Produto terceirizado?
+                </label>
+                <select
+                  id="is_third_party"
+                  name="is_third_party"
+                  value={form.is_third_party}
+                  onChange={handleFormChange}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                >
+                  <option value="nao">Nao</option>
+                  <option value="sim">Sim</option>
+                </select>
+              </div>
+
+              {isThirdParty && (
+                <div className="md:col-span-2">
+                  <label
+                    className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                    htmlFor="supplier_id"
+                  >
+                    Fornecedor
+                  </label>
+                  {suppliers.length === 0 ? (
+                    <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
+                      Nenhum fornecedor cadastrado.{' '}
+                      <Link href="/fornecedores/novo" className="font-semibold text-[#C0392B]">
+                        Cadastre um fornecedor primeiro.
+                      </Link>
+                    </div>
+                  ) : (
+                    <select
+                      id="supplier_id"
+                      name="supplier_id"
+                      value={form.supplier_id}
+                      onChange={handleFormChange}
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                    >
+                      <option value="">Sem fornecedor definido</option>
+                      {suppliers.map((supplier) => (
+                        <option key={supplier.id} value={supplier.id}>
+                          {supplier.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,0.8fr)] gap-3">
                 <div>
                   <label
@@ -766,6 +1035,140 @@ export default function NovaReceitaPage() {
             </div>
           </section>
 
+          {isKit && (
+            <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-[#1A0A08]">Composicao do kit</h2>
+                  <p className="mt-1 text-sm text-[#999999]">
+                    Selecione produtos ja cadastrados e informe a quantidade de cada item.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={addKitItem}
+                  disabled={isLoadingIngredients || availableKitProducts.length === 0}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Plus size={18} aria-hidden="true" />
+                  <span>Adicionar item</span>
+                </button>
+              </div>
+
+              {isLoadingIngredients ? (
+                <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
+                  Carregando produtos...
+                </div>
+              ) : availableKitProducts.length === 0 ? (
+                <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
+                  Nenhum produto cadastrado ainda. Cadastre produtos simples antes de montar um kit.
+                </div>
+              ) : recipeKitItems.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                  Adicione o primeiro produto para calcular o custo do kit.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {recipeKitItems.map((item, index) => {
+                    const selectedProduct = kitProductById.get(item.item_recipe_id)
+                    const itemCost = kitItemCosts.get(item.localId) ?? 0
+
+                    return (
+                      <div
+                        key={item.localId}
+                        className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                      >
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <p className="text-sm font-bold text-[#1A0A08]">Item {index + 1}</p>
+                          <button
+                            type="button"
+                            onClick={() => removeKitItem(item.localId)}
+                            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                            aria-label="Remover item do kit"
+                          >
+                            <Trash2 size={17} aria-hidden="true" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.5fr)_120px_150px] md:items-end">
+                          <div>
+                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                              Produto
+                            </label>
+                            <select
+                              value={item.item_recipe_id}
+                              onChange={(event) =>
+                                updateKitItem(item.localId, 'item_recipe_id', event.target.value)
+                              }
+                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                            >
+                              {availableKitProducts.map((product) => (
+                                <option key={product.id} value={product.id}>
+                                  {product.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                              Quantidade
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              inputMode="decimal"
+                              value={item.quantity}
+                              onChange={(event) =>
+                                updateKitItem(item.localId, 'quantity', event.target.value)
+                              }
+                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                            />
+                          </div>
+
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="text-xs font-medium text-[#999999]">Custo estimado</p>
+                            <p className="mt-1 font-bold text-[#1A0A08]">
+                              {formatCurrency(itemCost)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                          <div>
+                            <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                              Observacoes
+                            </label>
+                            <input
+                              type="text"
+                              value={item.notes}
+                              onChange={(event) =>
+                                updateKitItem(item.localId, 'notes', event.target.value)
+                              }
+                              placeholder="Ex: cliente escolhe os sabores no pedido"
+                              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                            />
+                          </div>
+
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="text-xs font-medium text-[#999999]">Custo do produto</p>
+                            <p className="mt-1 font-bold text-[#1A0A08]">
+                              {formatCurrency(selectedProduct?.total_cost)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
+          {!isKit && (
+            <>
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -896,6 +1299,8 @@ export default function NovaReceitaPage() {
               </div>
             )}
           </section>
+            </>
+          )}
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1082,19 +1487,30 @@ export default function NovaReceitaPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo dos ingredientes</p>
-                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(ingredientTotalCost)}
-                </p>
-              </div>
+              {isKit ? (
+                <div className="rounded-lg bg-[#FAF6F0] p-4">
+                  <p className="text-xs font-medium text-[#999999]">Custo dos itens do kit</p>
+                  <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                    {formatCurrency(kitTotalCost)}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-lg bg-[#FAF6F0] p-4">
+                    <p className="text-xs font-medium text-[#999999]">Custo dos ingredientes</p>
+                    <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                      {formatCurrency(ingredientTotalCost)}
+                    </p>
+                  </div>
 
-              <div className="rounded-lg bg-[#FAF6F0] p-4">
-                <p className="text-xs font-medium text-[#999999]">Custo das embalagens</p>
-                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
-                  {formatCurrency(packagingTotalCost)}
-                </p>
-              </div>
+                  <div className="rounded-lg bg-[#FAF6F0] p-4">
+                    <p className="text-xs font-medium text-[#999999]">Custo das embalagens</p>
+                    <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                      {formatCurrency(packagingTotalCost)}
+                    </p>
+                  </div>
+                </>
+              )}
 
               <div className="rounded-lg bg-[#FAF6F0] p-4">
                 <p className="text-xs font-medium text-[#999999]">Custo total</p>

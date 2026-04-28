@@ -3,43 +3,119 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { Search, Plus, Trash2 } from 'lucide-react'
+import { Package, Plus, Search, Trash2 } from 'lucide-react'
+
+type NumericValue = number | string | null | undefined
+
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
+
+type OrderItem = {
+  id: string
+  parent_order_item_id: string | null
+  item_name: string | null
+  quantity: NumericValue
+  unit_price: NumericValue
+  subtotal: NumericValue
+  notes: string | null
+}
+
+type Order = {
+  id: string
+  product_name: string | null
+  delivery_date: string
+  delivery_time: string
+  total_value: NumericValue
+  deposit_value: NumericValue
+  remaining_value: NumericValue
+  status: string
+  created_at: string
+  notes?: string | null
+  customers?: {
+    id: string
+    name: string
+    phone: string | null
+  } | null
+  order_items?: OrderItem[]
+}
 
 const statusOptions = [
   { id: 'todos', label: 'Todos', color: '#1A0A08' },
   { id: 'novo', label: 'Novo', color: '#3498DB' },
   { id: 'confirmado', label: 'Confirmado', color: '#2980B9' },
-  { id: 'em_producao', label: 'Em produção', color: '#F39C12' },
+  { id: 'em_producao', label: 'Em producao', color: '#F39C12' },
   { id: 'pronto', label: 'Pronto', color: '#27AE60' },
   { id: 'entregue', label: 'Entregue', color: '#7F8C8D' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B' },
 ]
 
-interface Order {
-  id: string
-  product_name: string
-  delivery_date: string
-  delivery_time: string
-  total_value: number
-  deposit_value: number
-  remaining_value: number
-  status: string
-  created_at: string
-  customer_phone?: string
-  notes?: string
-  payment_method?: string
-  address?: string
-  customers?: {
-    id: string
-    name: string
-    phone: string
+function parseNumericValue(value: NumericValue) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(',', '.'))
+    return Number.isFinite(parsed) ? parsed : 0
   }
-  order_items?: {
-    id: string
-    description: string
-    quantity: number
-    unit_price: number
-  }[]
+  return 0
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+    fullError: error,
+  })
+}
+
+function formatCurrency(value: NumericValue) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(parseNumericValue(value))
+}
+
+function formatDate(date: string) {
+  if (!date) return 'Sem data'
+
+  return new Date(date).toLocaleDateString('pt-BR')
+}
+
+function getStatusColor(status: string) {
+  const option = statusOptions.find((statusOption) => statusOption.id === status)
+  return option?.color || '#999999'
+}
+
+function getStatusLabel(status: string) {
+  const option = statusOptions.find((statusOption) => statusOption.id === status)
+  return option?.label || status
+}
+
+function getMainItems(order: Order) {
+  const items = order.order_items ?? []
+  const mainItems = items.filter((item) => !item.parent_order_item_id)
+
+  return mainItems.length > 0 ? mainItems : []
+}
+
+function getOrderSummary(order: Order) {
+  const mainItems = getMainItems(order)
+
+  if (mainItems.length === 0) {
+    return order.product_name || order.notes || 'Pedido sem itens estruturados'
+  }
+
+  return mainItems
+    .slice(0, 2)
+    .map((item) => `${parseNumericValue(item.quantity)}x ${item.item_name || 'Produto'}`)
+    .join(' + ')
 }
 
 export default function PedidosPage() {
@@ -51,11 +127,20 @@ export default function PedidosPage() {
   const supabase = useMemo(() => createClient(), [])
 
   const loadOrders = useCallback(async () => {
-    await Promise.resolve()
     setIsLoading(true)
     setError('')
+
     try {
-      const { data, error } = await supabase
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuaria nao autenticada')
+      }
+
+      const { data, error: ordersError } = await supabase
         .from('orders')
         .select(`
           *,
@@ -66,16 +151,23 @@ export default function PedidosPage() {
           ),
           order_items (
             id,
-            description,
+            parent_order_item_id,
+            item_name,
             quantity,
-            unit_price
+            unit_price,
+            subtotal,
+            notes
           )
         `)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
-      if (error) throw error
+      if (ordersError) {
+        logSupabaseError('Erro Supabase orders select:', ordersError)
+        throw ordersError
+      }
 
-      setOrders(data || [])
+      setOrders((data ?? []) as Order[])
     } catch (err) {
       console.error('Erro ao carregar pedidos:', err)
       setError('Falha ao carregar pedidos')
@@ -93,96 +185,82 @@ export default function PedidosPage() {
   }, [loadOrders])
 
   const filteredOrders = useMemo(() => {
-    let filtered = [...orders]
+    const query = searchQuery.trim().toLowerCase()
 
-    // Filtrar por status
-    if (selectedStatus !== 'todos') {
-      filtered = filtered.filter((order) => order.status === selectedStatus)
-    }
+    return orders.filter((order) => {
+      if (selectedStatus !== 'todos' && order.status !== selectedStatus) return false
+      if (!query) return true
 
-    // Filtrar por busca
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      filtered = filtered.filter((order) =>
+      const itemNames = (order.order_items ?? [])
+        .map((item) => item.item_name ?? '')
+        .join(' ')
+        .toLowerCase()
+
+      return (
         order.customers?.name?.toLowerCase().includes(query) ||
-        order.product_name.toLowerCase().includes(query)
+        order.product_name?.toLowerCase().includes(query) ||
+        itemNames.includes(query)
       )
-    }
-
-    return filtered
+    })
   }, [orders, searchQuery, selectedStatus])
 
-  const getStatusColor = (status: string) => {
-    const option = statusOptions.find((s) => s.id === status)
-    return option?.color || '#999999'
-  }
-
-  const getStatusLabel = (status: string) => {
-    const option = statusOptions.find((s) => s.id === status)
-    return option?.label || status
-  }
-
-  const deleteOrder = async (id: string) => {
+  async function deleteOrder(id: string) {
     if (!confirm('Tem certeza que deseja excluir este pedido?')) return
 
     try {
-      const { error } = await supabase.from('orders').delete().eq('id', id)
-      if (error) throw error
-      loadOrders()
+      const { error: deleteError } = await supabase.from('orders').delete().eq('id', id)
+
+      if (deleteError) {
+        logSupabaseError('Erro Supabase orders delete:', deleteError)
+        throw deleteError
+      }
+
+      await loadOrders()
     } catch (err) {
       console.error('Erro ao deletar:', err)
       setError('Falha ao deletar pedido')
     }
   }
 
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('pt-BR', {
-      style: 'currency',
-      currency: 'BRL',
-    }).format(value)
-  }
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString('pt-BR')
-  }
-
   return (
     <div className="w-full pb-8">
-      {/* Header */}
-      <div className="px-4 lg:px-6 py-6 bg-white border-b border-[rgba(26,10,8,0.07)]">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-[#1A0A08]">Pedidos</h1>
+      <div className="border-b border-[rgba(26,10,8,0.07)] bg-white px-4 py-6 lg:px-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
+              Vendas
+            </p>
+            <h1 className="text-2xl font-bold text-[#1A0A08]">Pedidos</h1>
+          </div>
           <Link
             href="/pedidos/novo"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#C0392B] hover:bg-[#A0301F] text-white font-medium transition-colors"
+            className="flex items-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2 font-medium text-white transition-colors hover:bg-[#A0301F]"
           >
-            <Plus size={20} />
+            <Plus size={20} aria-hidden="true" />
             <span className="hidden sm:inline">Novo pedido</span>
           </Link>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="px-4 lg:px-6 py-6 max-w-7xl mx-auto">
+      <main className="mx-auto max-w-7xl px-4 py-6 lg:px-6">
         {error && (
-          <div className="mb-4 p-3 rounded-lg bg-red-100 border border-red-300 text-red-800 text-sm">
+          <div className="mb-4 rounded-lg border border-red-300 bg-red-100 p-3 text-sm text-red-800">
             {error}
           </div>
         )}
 
-        {/* Filters */}
         <div className="mb-6 space-y-4">
-          {/* Status Filter */}
           <div className="overflow-x-auto pb-2">
-            <div className="flex gap-2 min-w-min">
+            <div className="flex min-w-min gap-2">
               {statusOptions.map((option) => (
                 <button
                   key={option.id}
+                  type="button"
                   onClick={() => setSelectedStatus(option.id)}
-                  className={`px-4 py-2 rounded-lg whitespace-nowrap font-medium transition-colors ${
+                  className={`whitespace-nowrap rounded-lg px-4 py-2 font-medium transition-colors ${
                     selectedStatus === option.id
                       ? 'bg-[#C0392B] text-white'
-                      : 'bg-white border border-[rgba(26,10,8,0.07)] text-[#1A0A08] hover:bg-[#FAF6F0]'
+                      : 'border border-[rgba(26,10,8,0.07)] bg-white text-[#1A0A08] hover:bg-[#FAF6F0]'
                   }`}
                 >
                   {option.label}
@@ -191,29 +269,31 @@ export default function PedidosPage() {
             </div>
           </div>
 
-          {/* Search */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#999999]" size={20} />
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#999999]"
+              size={20}
+              aria-hidden="true"
+            />
             <input
               type="text"
-              placeholder="Buscar por cliente ou pedido..."
+              placeholder="Buscar por cliente, pedido ou item..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-2 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
             />
           </div>
         </div>
 
-        {/* Orders List */}
         {isLoading ? (
-          <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-[#C0392B]"></div>
+          <div className="py-12 text-center">
+            <div className="inline-block h-8 w-8 animate-spin rounded-full border-b-2 border-[#C0392B]" />
             <p className="mt-2 text-[#999999]">Carregando pedidos...</p>
           </div>
         ) : filteredOrders.length === 0 ? (
-          <div className="text-center py-12 bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)]">
+          <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white py-12 text-center">
             <p className="text-lg font-medium text-[#1A0A08]">Nenhum pedido encontrado</p>
-            <p className="text-sm text-[#999999] mt-1">
+            <p className="mt-1 text-sm text-[#999999]">
               {searchQuery || selectedStatus !== 'todos'
                 ? 'Tente ajustar seus filtros'
                 : 'Comece criando seu primeiro pedido'}
@@ -221,75 +301,95 @@ export default function PedidosPage() {
             {selectedStatus === 'todos' && !searchQuery && (
               <Link
                 href="/pedidos/novo"
-                className="inline-block mt-4 px-4 py-2 bg-[#C0392B] hover:bg-[#A0301F] text-white rounded-lg font-medium transition-colors"
+                className="mt-4 inline-block rounded-lg bg-[#C0392B] px-4 py-2 font-medium text-white transition-colors hover:bg-[#A0301F]"
               >
-                Criar Pedido
+                Criar pedido
               </Link>
             )}
           </div>
         ) : (
           <div className="space-y-3">
-            {filteredOrders.map((order) => (
-              <Link
-                key={order.id}
-                href={`/pedidos/${order.id}`}
-                className="block bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] hover:shadow-md transition-shadow overflow-hidden"
-              >
-                <div
-                  className="flex items-center gap-4 p-4"
-                  style={{ borderLeft: `4px solid ${getStatusColor(order.status)}` }}
+            {filteredOrders.map((order) => {
+              const mainItems = getMainItems(order)
+              const hasStructuredItems = mainItems.length > 0
+
+              return (
+                <Link
+                  key={order.id}
+                  href={`/pedidos/${order.id}`}
+                  className="block overflow-hidden rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white transition-shadow hover:shadow-md"
                 >
-                  {/* Avatar */}
-                  <div className="w-12 h-12 rounded-full bg-[#C0392B] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                    {order.customers?.name
-                      ?.split(' ')
-                      ?.map((n: string) => n[0])
-                      ?.join('')
-                      ?.toUpperCase()
-                      ?.slice(0, 2)}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-[#1A0A08]">{order.customers?.name}</p>
-                    <p className="text-sm text-[#999999] truncate">{order.product_name}</p>
-                    <p className="text-xs text-[#999999] mt-1">
-                      {formatDate(order.delivery_date)} às {order.delivery_time}
-                    </p>
-                  </div>
-
-                  {/* Value */}
-                  <div className="flex flex-col items-end flex-shrink-0">
-                    <p className="font-bold text-[#1A0A08]">{formatCurrency(order.total_value)}</p>
-                    <p className="text-xs text-[#C9A84C]">
-                      {formatCurrency(order.deposit_value)} sinal
-                    </p>
-                  </div>
-
-                  {/* Status Badge */}
                   <div
-                    className="px-3 py-1.5 rounded-full text-white text-xs font-semibold flex-shrink-0"
-                    style={{ backgroundColor: getStatusColor(order.status) }}
+                    className="flex flex-col gap-4 p-4 md:flex-row md:items-center"
+                    style={{ borderLeft: `4px solid ${getStatusColor(order.status)}` }}
                   >
-                    {getStatusLabel(order.status)}
-                  </div>
+                    <div className="flex min-w-0 flex-1 items-start gap-4">
+                      <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
+                        {order.customers?.name
+                          ?.split(' ')
+                          .map((namePart) => namePart[0])
+                          .join('')
+                          .toUpperCase()
+                          .slice(0, 2)}
+                      </div>
 
-                  {/* Delete Button */}
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault()
-                      deleteOrder(order.id)
-                    }}
-                    className="p-2 rounded-lg text-[#999999] hover:bg-red-100 hover:text-[#C0392B] transition-colors flex-shrink-0"
-                  >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              </Link>
-            ))}
+                      <div className="min-w-0">
+                        <p className="font-semibold text-[#1A0A08]">
+                          {order.customers?.name || 'Cliente nao informado'}
+                        </p>
+                        <p className="truncate text-sm text-[#999999]">{getOrderSummary(order)}</p>
+                        <p className="mt-1 text-xs text-[#999999]">
+                          {formatDate(order.delivery_date)} as {order.delivery_time}
+                        </p>
+                        {hasStructuredItems && (
+                          <div className="mt-2 flex items-center gap-2 text-xs text-[#1A0A08]">
+                            <Package size={14} className="text-[#C9A84C]" aria-hidden="true" />
+                            <span>
+                              {mainItems.length === 1
+                                ? '1 item estruturado'
+                                : `${mainItems.length} itens estruturados`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 md:flex-shrink-0">
+                      <div className="text-right">
+                        <p className="font-bold text-[#1A0A08]">
+                          {formatCurrency(order.total_value)}
+                        </p>
+                        <p className="text-xs text-[#C9A84C]">
+                          {formatCurrency(order.deposit_value)} sinal
+                        </p>
+                      </div>
+
+                      <div
+                        className="rounded-full px-3 py-1.5 text-xs font-semibold text-white"
+                        style={{ backgroundColor: getStatusColor(order.status) }}
+                      >
+                        {getStatusLabel(order.status)}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          void deleteOrder(order.id)
+                        }}
+                        className="rounded-lg p-2 text-[#999999] transition-colors hover:bg-red-100 hover:text-[#C0392B]"
+                        aria-label="Excluir pedido"
+                      >
+                        <Trash2 size={18} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                </Link>
+              )
+            })}
           </div>
         )}
-      </div>
+      </main>
     </div>
   )
 }

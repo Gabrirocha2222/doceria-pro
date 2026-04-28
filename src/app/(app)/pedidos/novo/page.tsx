@@ -1,28 +1,66 @@
 'use client'
 
+import type { ChangeEvent, FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Trash2, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Package, Plus, Save, Trash2, Upload } from 'lucide-react'
 
-const statusOptions = [
-  { id: 'novo', label: 'Novo' },
-  { id: 'confirmado', label: 'Confirmado' },
-  { id: 'em_producao', label: 'Em produção' },
-  { id: 'pronto', label: 'Pronto' },
-  { id: 'entregue', label: 'Entregue' },
-  { id: 'cancelado', label: 'Cancelado' },
-]
+type NumericValue = number | string | null | undefined
+type ProductType = 'simples' | 'kit'
 
-const paymentMethods = [
-  { id: 'dinheiro', label: 'Dinheiro' },
-  { id: 'pix', label: 'PIX' },
-  { id: 'cartao_credito', label: 'Cartão crédito' },
-  { id: 'cartao_debito', label: 'Cartão débito' },
-  { id: 'transferencia', label: 'Transferência' },
-]
+type SupabaseErrorLike = {
+  message?: string
+  details?: string
+  hint?: string
+  code?: string
+}
 
-interface FormData {
+type Recipe = {
+  id: string
+  name: string
+  product_type: ProductType | null
+  sale_price: NumericValue
+  suggested_price: NumericValue
+}
+
+type ProductKitItem = {
+  id: string
+  kit_recipe_id: string
+  item_recipe_id: string
+  quantity: NumericValue
+  notes: string | null
+}
+
+type FlavorItem = {
+  localId: string
+  name: string
+  quantity: string
+}
+
+type KitSubItem = {
+  localId: string
+  kit_item_id: string
+  recipe_id: string
+  item_name: string
+  quantity: string
+  notes: string
+  flavors: FlavorItem[]
+}
+
+type OrderProductItem = {
+  localId: string
+  recipe_id: string
+  item_name: string
+  product_type: ProductType
+  quantity: string
+  unit_price: string
+  notes: string
+  flavors: FlavorItem[]
+  kit_subitems: KitSubItem[]
+}
+
+type OrderForm = {
   customer_name: string
   customer_phone: string
   product_name: string
@@ -30,9 +68,7 @@ interface FormData {
   order_date: string
   delivery_date: string
   delivery_time: string
-  total_value: number
-  deposit_value: number
-  remaining_value: number
+  deposit_value: string
   status: string
   payment_method: string
   remaining_payment_method: string
@@ -42,331 +78,702 @@ interface FormData {
   notes: string
 }
 
-export default function NovoPedidoPage() {
-  const [form, setForm] = useState<FormData>({
-    customer_name: '',
-    customer_phone: '',
-    product_name: '',
-    description: '',
-    order_date: new Date().toISOString().split('T')[0],
-    delivery_date: '',
-    delivery_time: '',
-    total_value: 0,
-    deposit_value: 0,
-    remaining_value: 0,
-    status: 'novo',
-    payment_method: 'pix',
-    remaining_payment_method: 'pix',
-    deposit_payment_date: '',
-    remaining_payment_date: '',
-    address: '',
-    notes: '',
-  })
+const statusOptions = [
+  { id: 'novo', label: 'Novo' },
+  { id: 'confirmado', label: 'Confirmado' },
+  { id: 'em_producao', label: 'Em producao' },
+  { id: 'pronto', label: 'Pronto' },
+  { id: 'entregue', label: 'Entregue' },
+  { id: 'cancelado', label: 'Cancelado' },
+]
 
+const paymentMethods = [
+  { id: 'dinheiro', label: 'Dinheiro' },
+  { id: 'pix', label: 'PIX' },
+  { id: 'cartao_credito', label: 'Cartao credito' },
+  { id: 'cartao_debito', label: 'Cartao debito' },
+  { id: 'transferencia', label: 'Transferencia' },
+]
+
+const initialForm: OrderForm = {
+  customer_name: '',
+  customer_phone: '',
+  product_name: '',
+  description: '',
+  order_date: new Date().toISOString().split('T')[0],
+  delivery_date: '',
+  delivery_time: '',
+  deposit_value: '',
+  status: 'novo',
+  payment_method: 'pix',
+  remaining_payment_method: 'pix',
+  deposit_payment_date: '',
+  remaining_payment_date: '',
+  address: '',
+  notes: '',
+}
+
+function createLocalId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function parseDecimal(value: string) {
+  const parsed = Number(value.replace(',', '.'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function parseNumericValue(value: NumericValue) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  if (typeof value === 'string') return parseDecimal(value)
+  return 0
+}
+
+function optionalText(value: string) {
+  const trimmedValue = value.trim()
+  return trimmedValue || null
+}
+
+function formatCurrency(value: NumericValue) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(parseNumericValue(value))
+}
+
+function getEffectiveSalePrice(recipe: Recipe) {
+  return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
+}
+
+function logSupabaseError(context: string, error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+
+  console.error(context, {
+    message: supabaseError.message,
+    details: supabaseError.details,
+    hint: supabaseError.hint,
+    code: supabaseError.code,
+    fullError: error,
+  })
+}
+
+function buildFlavorPayload(flavors: FlavorItem[]) {
+  const payload = flavors
+    .map((flavor) => ({
+      name: flavor.name.trim(),
+      quantity: parseDecimal(flavor.quantity),
+    }))
+    .filter((flavor) => flavor.name || flavor.quantity > 0)
+
+  return payload.length > 0 ? payload : null
+}
+
+export default function NovoPedidoPage() {
+  const [form, setForm] = useState<OrderForm>(initialForm)
+  const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [kitItems, setKitItems] = useState<ProductKitItem[]>([])
+  const [orderItems, setOrderItems] = useState<OrderProductItem[]>([])
   const [images, setImages] = useState<File[]>([])
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingData, setIsLoadingData] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
-  // Obter user_id ao montar o componente
   useEffect(() => {
-    const getUser = async () => {
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
-      if (userError) {
-        console.error('Erro ao obter usuário:', userError)
-        setError('Erro ao autenticar. Faça login novamente.')
-        return
-      }
-      if (user) {
-        console.log('✅ Usuário autenticado:', user.id)
-      } else {
-        setError('Usuária não autenticada. Faça login para continuar.')
+    let isMounted = true
+
+    async function loadProducts() {
+      setIsLoadingData(true)
+      setError('')
+
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser()
+
+        if (userError || !user) {
+          throw new Error('Usuaria nao autenticada. Faca login para continuar.')
+        }
+
+        const { data: recipesData, error: recipesError } = await supabase
+          .from('recipes')
+          .select('id, name, product_type, sale_price, suggested_price')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (recipesError) {
+          logSupabaseError('Erro Supabase recipes:', recipesError)
+          throw recipesError
+        }
+
+        const { data: kitItemsData, error: kitItemsError } = await supabase
+          .from('product_kit_items')
+          .select('id, kit_recipe_id, item_recipe_id, quantity, notes')
+          .eq('user_id', user.id)
+
+        if (kitItemsError) {
+          logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
+          throw kitItemsError
+        }
+
+        if (isMounted) {
+          setRecipes((recipesData ?? []) as Recipe[])
+          setKitItems((kitItemsData ?? []) as ProductKitItem[])
+        }
+      } catch (err) {
+        console.error('Erro ao carregar produtos:', err)
+        if (isMounted) {
+          const message = err instanceof Error ? err.message : 'Falha ao carregar produtos'
+          setError(message)
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingData(false)
+        }
       }
     }
-    getUser()
+
+    loadProducts()
+
+    return () => {
+      isMounted = false
+    }
   }, [supabase])
 
-  const handleInputChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => {
-    const { name, value } = e.target
+  const recipeById = useMemo(() => {
+    return new Map(recipes.map((recipe) => [recipe.id, recipe]))
+  }, [recipes])
 
-    const field = name as keyof FormData
-    setForm((prev) => ({
-      ...prev,
-      [field]:
-        field === 'total_value' || field === 'deposit_value'
-          ? parseFloat(value) || 0
-          : value,
-      ...(field === 'total_value' && {
-        remaining_value: (parseFloat(value) || 0) - prev.deposit_value,
-      }),
-      ...(field === 'deposit_value' && {
-        remaining_value: prev.total_value - (parseFloat(value) || 0),
-      }),
+  const kitItemsByKitId = useMemo(() => {
+    const groupedItems = new Map<string, ProductKitItem[]>()
+
+    kitItems.forEach((item) => {
+      const currentItems = groupedItems.get(item.kit_recipe_id) ?? []
+      groupedItems.set(item.kit_recipe_id, [...currentItems, item])
+    })
+
+    return groupedItems
+  }, [kitItems])
+
+  const orderTotal = useMemo(() => {
+    return orderItems.reduce((sum, item) => {
+      return sum + parseDecimal(item.quantity) * parseDecimal(item.unit_price)
+    }, 0)
+  }, [orderItems])
+
+  const depositValue = parseDecimal(form.deposit_value)
+  const remainingValue = Math.max(orderTotal - depositValue, 0)
+
+  function buildKitSubItems(recipeId: string) {
+    const selectedKitItems = kitItemsByKitId.get(recipeId) ?? []
+
+    return selectedKitItems.map((kitItem) => {
+      const recipe = recipeById.get(kitItem.item_recipe_id)
+
+      return {
+        localId: createLocalId(),
+        kit_item_id: kitItem.id,
+        recipe_id: kitItem.item_recipe_id,
+        item_name: recipe?.name ?? 'Item do kit',
+        quantity: String(parseNumericValue(kitItem.quantity) || 1),
+        notes: kitItem.notes ?? '',
+        flavors: [],
+      }
+    })
+  }
+
+  function buildOrderItem(recipe: Recipe): OrderProductItem {
+    const productType = recipe.product_type === 'kit' ? 'kit' : 'simples'
+
+    return {
+      localId: createLocalId(),
+      recipe_id: recipe.id,
+      item_name: recipe.name,
+      product_type: productType,
+      quantity: '1',
+      unit_price: String(getEffectiveSalePrice(recipe)),
+      notes: '',
+      flavors: [],
+      kit_subitems: productType === 'kit' ? buildKitSubItems(recipe.id) : [],
+    }
+  }
+
+  function handleInputChange(
+    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) {
+    const field = event.target.name as keyof OrderForm
+    const value = event.target.value
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      [field]: value,
     }))
   }
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setImages(Array.from(e.target.files))
+  function addOrderItem() {
+    const firstRecipe = recipes[0]
+
+    if (!firstRecipe) {
+      setError('Cadastre produtos em Receitas antes de montar um pedido')
+      return
+    }
+
+    setOrderItems((currentItems) => [...currentItems, buildOrderItem(firstRecipe)])
+  }
+
+  function updateOrderItem(
+    localId: string,
+    field: 'recipe_id' | 'quantity' | 'unit_price' | 'notes',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== localId) return item
+
+        if (field === 'recipe_id') {
+          const recipe = recipeById.get(value)
+          return recipe ? buildOrderItem(recipe) : item
+        }
+
+        return {
+          ...item,
+          [field]: value,
+        }
+      })
+    )
+  }
+
+  function removeOrderItem(localId: string) {
+    setOrderItems((currentItems) => currentItems.filter((item) => item.localId !== localId))
+  }
+
+  function addFlavor(itemLocalId: string) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          flavors: [...item.flavors, { localId: createLocalId(), name: '', quantity: '' }],
+        }
+      })
+    )
+  }
+
+  function updateFlavor(
+    itemLocalId: string,
+    flavorLocalId: string,
+    field: 'name' | 'quantity',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          flavors: item.flavors.map((flavor) =>
+            flavor.localId === flavorLocalId ? { ...flavor, [field]: value } : flavor
+          ),
+        }
+      })
+    )
+  }
+
+  function removeFlavor(itemLocalId: string, flavorLocalId: string) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          flavors: item.flavors.filter((flavor) => flavor.localId !== flavorLocalId),
+        }
+      })
+    )
+  }
+
+  function addSubItemFlavor(itemLocalId: string, subItemLocalId: string) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_subitems: item.kit_subitems.map((subItem) =>
+            subItem.localId === subItemLocalId
+              ? {
+                  ...subItem,
+                  flavors: [
+                    ...subItem.flavors,
+                    { localId: createLocalId(), name: '', quantity: '' },
+                  ],
+                }
+              : subItem
+          ),
+        }
+      })
+    )
+  }
+
+  function updateSubItemFlavor(
+    itemLocalId: string,
+    subItemLocalId: string,
+    flavorLocalId: string,
+    field: 'name' | 'quantity',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_subitems: item.kit_subitems.map((subItem) =>
+            subItem.localId === subItemLocalId
+              ? {
+                  ...subItem,
+                  flavors: subItem.flavors.map((flavor) =>
+                    flavor.localId === flavorLocalId ? { ...flavor, [field]: value } : flavor
+                  ),
+                }
+              : subItem
+          ),
+        }
+      })
+    )
+  }
+
+  function removeSubItemFlavor(
+    itemLocalId: string,
+    subItemLocalId: string,
+    flavorLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_subitems: item.kit_subitems.map((subItem) =>
+            subItem.localId === subItemLocalId
+              ? {
+                  ...subItem,
+                  flavors: subItem.flavors.filter((flavor) => flavor.localId !== flavorLocalId),
+                }
+              : subItem
+          ),
+        }
+      })
+    )
+  }
+
+  function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
+    if (event.target.files) {
+      setImages(Array.from(event.target.files))
     }
   }
 
-  const removeImage = (index: number) => {
-    setImages(images.filter((_, i) => i !== index))
+  function removeImage(index: number) {
+    setImages((currentImages) => currentImages.filter((_, currentIndex) => currentIndex !== index))
   }
 
-  const validateForm = (): boolean => {
-    if (!form.customer_name.trim()) {
-      setError('Nome da cliente é obrigatório')
-      return false
-    }
-    if (!form.product_name.trim()) {
-      setError('Nome do pedido é obrigatório')
-      return false
-    }
-    if (!form.delivery_date) {
-      setError('Data de entrega é obrigatória')
-      return false
-    }
-    if (!form.delivery_time) {
-      setError('Horário de entrega é obrigatório')
-      return false
-    }
-    if (form.total_value <= 0) {
-      setError('Valor total deve ser maior que zero')
-      return false
-    }
-    return true
+  function validateFlavorList(flavors: FlavorItem[]) {
+    return flavors.every((flavor) => {
+      const hasContent = flavor.name.trim() || flavor.quantity.trim()
+      if (!hasContent) return true
+
+      return Boolean(flavor.name.trim()) && parseDecimal(flavor.quantity) > 0
+    })
   }
 
-  const uploadImages = async (orderId: string) => {
+  function validateForm() {
+    if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
+    if (!form.delivery_date) return 'Data da festa/evento e obrigatoria'
+    if (!form.delivery_time) return 'Horario de entrega e obrigatorio'
+    if (orderItems.length === 0) return 'Adicione pelo menos um produto ao pedido'
+    if (orderTotal <= 0) return 'Total do pedido deve ser maior que zero'
+    if (depositValue < 0) return 'Valor do sinal nao pode ser negativo'
+
+    const invalidItem = orderItems.some((item) => {
+      if (!item.recipe_id || parseDecimal(item.quantity) <= 0 || parseDecimal(item.unit_price) < 0) {
+        return true
+      }
+
+      if (!validateFlavorList(item.flavors)) return true
+
+      return item.kit_subitems.some((subItem) => !validateFlavorList(subItem.flavors))
+    })
+
+    if (invalidItem) {
+      return 'Confira produtos, quantidades, precos e sabores do pedido'
+    }
+
+    return ''
+  }
+
+  async function uploadImages(orderId: string) {
     const uploadedPaths: string[] = []
 
     for (const image of images) {
       try {
         const filename = `${orderId}/${Date.now()}-${image.name}`
-        const { error } = await supabase.storage
+        const { error: uploadError } = await supabase.storage
           .from('order-images')
           .upload(filename, image)
 
-        if (error) throw error
+        if (uploadError) throw uploadError
         uploadedPaths.push(filename)
       } catch (err) {
-        console.error('Erro ao fazer upload da imagem:', err)
+        logSupabaseError('Erro ao fazer upload da imagem:', err)
       }
     }
 
     return uploadedPaths
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
     setError('')
 
-    if (!validateForm()) return
-
-    // ✅ Verificar autenticação do usuário
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
-    if (userError || !user) {
-      console.error('❌ Erro de autenticação:', userError)
-      setError('Usuária não autenticada. Faça login novamente.')
+    const validationError = validateForm()
+    if (validationError) {
+      setError(validationError)
       return
     }
 
-    const currentUserId = user.id
-    console.log('✅ user_id verificado:', currentUserId)
-
-    setIsLoading(true)
+    setIsSubmitting(true)
 
     try {
-      console.log('📝 Iniciando criação de pedido...')
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
 
-      // 1. Buscar ou criar cliente na tabela customers
+      if (userError || !user) {
+        throw new Error('Usuaria nao autenticada. Faca login novamente.')
+      }
+
+      const currentUserId = user.id
       let customerId: string
 
       const { data: existingCustomers, error: searchError } = await supabase
         .from('customers')
         .select('id')
         .eq('user_id', currentUserId)
-        .eq('name', form.customer_name)
+        .eq('name', form.customer_name.trim())
         .limit(1)
 
       if (searchError) {
-        console.error('Erro ao buscar cliente:', searchError)
-        throw new Error('Erro ao buscar cliente')
+        logSupabaseError('Erro Supabase customers select:', searchError)
+        throw searchError
       }
 
       if (existingCustomers && existingCustomers.length > 0) {
         customerId = existingCustomers[0].id
-        console.log('✅ Cliente existente encontrado:', customerId)
       } else {
-        console.log('👤 Criando nova cliente...')
         const { data: newCustomer, error: createCustomerError } = await supabase
           .from('customers')
-          .insert([{
-            user_id: currentUserId,
-            name: form.customer_name,
-            phone: form.customer_phone || null,
-          }])
-          .select()
+          .insert([
+            {
+              user_id: currentUserId,
+              name: form.customer_name.trim(),
+              phone: optionalText(form.customer_phone),
+            },
+          ])
+          .select('id')
+          .single()
 
-        if (createCustomerError || !newCustomer || newCustomer.length === 0) {
-          console.error('❌ Erro ao criar cliente:', createCustomerError)
-          throw new Error('Erro ao criar cliente')
+        if (createCustomerError) {
+          logSupabaseError('Erro Supabase customers insert:', createCustomerError)
+          throw createCustomerError
         }
-        customerId = newCustomer[0].id
-        console.log('✅ Nova cliente criada:', customerId)
+
+        if (!newCustomer?.id) {
+          throw new Error('Cliente criado sem id retornado pelo Supabase')
+        }
+
+        customerId = newCustomer.id
       }
 
-      // 2. Inserir pedido na tabela orders usando o customer_id
       const orderData = {
         user_id: currentUserId,
         customer_id: customerId,
         order_date: form.order_date,
         delivery_date: form.delivery_date,
         delivery_time: form.delivery_time,
-        total_value: Number(form.total_value) || 0,
-        deposit_value: Number(form.deposit_value) || 0,
+        total_value: orderTotal,
+        deposit_value: depositValue,
         status: form.status || 'novo',
-        payment_status: form.deposit_value > 0 ? 'partial' : 'pending',
-        delivery_address: form.address || null,
-        notes: form.notes || null,
+        payment_status: depositValue > 0 ? 'partial' : 'pending',
+        delivery_address: optionalText(form.address),
+        notes: optionalText(form.notes || form.description),
       }
-
-      console.log('🛒 Dados do pedido a inserir:', JSON.stringify(orderData, null, 2))
 
       const { data: createdOrder, error: orderError } = await supabase
         .from('orders')
         .insert([orderData])
-        .select()
+        .select('id')
+        .single()
 
       if (orderError) {
-        console.error('❌ Erro detalhado:', JSON.stringify(orderError, null, 2))
-        throw new Error(`Erro ao salvar pedido: ${orderError.message || orderError.code}`)
+        logSupabaseError('Erro Supabase orders insert:', orderError)
+        throw orderError
       }
 
-      if (!createdOrder || createdOrder.length === 0) {
-        throw new Error('Falha ao criar pedido: sem resposta do servidor')
+      if (!createdOrder?.id) {
+        throw new Error('Pedido criado sem id retornado pelo Supabase')
       }
 
-      const orderId = createdOrder[0].id
-      console.log('✅ Pedido criado com ID:', orderId)
+      const orderId = createdOrder.id
 
-      // 3. Inserir o item na tabela order_items
-      const orderItem = {
-        order_id: orderId,
-        description: form.product_name,
-        quantity: 1,
-        unit_price: form.total_value,
+      for (const item of orderItems) {
+        const quantity = parseDecimal(item.quantity)
+        const unitPrice = parseDecimal(item.unit_price)
+        const subtotal = quantity * unitPrice
+        const flavorPayload = buildFlavorPayload(item.flavors)
+
+        const { data: createdItem, error: itemError } = await supabase
+          .from('order_items')
+          .insert([
+            {
+              user_id: currentUserId,
+              order_id: orderId,
+              recipe_id: item.recipe_id,
+              parent_order_item_id: null,
+              item_name: item.item_name,
+              quantity,
+              unit_price: unitPrice,
+              subtotal,
+              flavor_details: flavorPayload,
+              notes: optionalText(item.notes),
+            },
+          ])
+          .select('id')
+          .single()
+
+        if (itemError) {
+          logSupabaseError('Erro Supabase order_items insert:', itemError)
+          throw itemError
+        }
+
+        if (!createdItem?.id) {
+          throw new Error('Item de pedido criado sem id retornado pelo Supabase')
+        }
+
+        if (item.product_type === 'kit' && item.kit_subitems.length > 0) {
+          const childItems = item.kit_subitems.map((subItem) => ({
+            user_id: currentUserId,
+            order_id: orderId,
+            recipe_id: subItem.recipe_id,
+            parent_order_item_id: createdItem.id,
+            item_name: subItem.item_name,
+            quantity: parseDecimal(subItem.quantity),
+            unit_price: 0,
+            subtotal: 0,
+            flavor_details: buildFlavorPayload(subItem.flavors),
+            notes: optionalText(subItem.notes),
+          }))
+
+          const { error: childItemsError } = await supabase.from('order_items').insert(childItems)
+
+          if (childItemsError) {
+            logSupabaseError('Erro Supabase order_items filhos insert:', childItemsError)
+            throw childItemsError
+          }
+        }
       }
 
-      console.log('📦 Criando item do pedido:', orderItem)
-
-      const { error: itemError } = await supabase
-        .from('order_items')
-        .insert([orderItem])
-
-      if (itemError) {
-        console.error('⚠️ Aviso: Erro ao criar item do pedido:', itemError)
-      } else {
-        console.log('✅ Item do pedido criado')
-      }
-
-      // Criar registros de pagamento
       const payments = []
 
-      if (form.deposit_value > 0) {
+      if (depositValue > 0) {
         payments.push({
           order_id: orderId,
-          amount: form.deposit_value,
+          amount: depositValue,
           method: form.payment_method,
           payment_date: form.deposit_payment_date || null,
-          notes: 'Sinal'
+          notes: 'Sinal',
         })
       }
 
-      if (form.remaining_value > 0) {
+      if (remainingValue > 0) {
         payments.push({
           order_id: orderId,
-          amount: form.remaining_value,
+          amount: remainingValue,
           method: form.remaining_payment_method,
           payment_date: form.remaining_payment_date || null,
-          notes: 'Restante'
+          notes: 'Restante',
         })
       }
 
       if (payments.length > 0) {
-        console.log('💰 Criando registros de pagamento:', payments)
-
-        const { error: paymentsError } = await supabase
-          .from('payments')
-          .insert(payments)
+        const { error: paymentsError } = await supabase.from('payments').insert(payments)
 
         if (paymentsError) {
-          console.error('⚠️ Aviso: Erro ao criar pagamentos:', paymentsError)
-        } else {
-          console.log('✅ Pagamentos registrados')
+          logSupabaseError('Aviso Supabase payments insert:', paymentsError)
         }
       }
 
-      // Upload de imagens
       if (images.length > 0) {
-        console.log('📸 Fazendo upload de', images.length, 'imagem(ns)...')
         const imagePaths = await uploadImages(orderId)
+
         if (imagePaths.length > 0) {
-          await supabase
+          const { error: imageUpdateError } = await supabase
             .from('orders')
             .update({ image_paths: imagePaths })
             .eq('id', orderId)
-          console.log('✅ Imagens salvas')
+
+          if (imageUpdateError) {
+            logSupabaseError('Aviso Supabase orders image_paths update:', imageUpdateError)
+          }
         }
       }
 
-      console.log('🎉 Pedido criado com sucesso!')
       router.push(`/pedidos/${orderId}`)
     } catch (err) {
-      console.error('❌ Erro geral:', err)
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      setError(`Falha ao salvar pedido: ${errorMessage}`)
-    } finally {
-      setIsLoading(false)
+      console.error('Erro geral ao salvar pedido:', err)
+      const message = err instanceof Error ? err.message : 'Falha ao salvar pedido'
+      setError(message)
+      setIsSubmitting(false)
     }
   }
 
   return (
     <div className="w-full pb-8">
-      {/* Header */}
-      <div className="px-4 lg:px-6 py-4 bg-white border-b border-[rgba(26,10,8,0.07)] sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto flex items-center gap-4">
+      <div className="sticky top-0 z-10 border-b border-[rgba(26,10,8,0.07)] bg-white px-4 py-4 lg:px-6">
+        <div className="mx-auto flex max-w-4xl items-center gap-4">
           <button
+            type="button"
             onClick={() => router.back()}
-            className="p-2 hover:bg-[#FAF6F0] rounded-lg transition-colors"
+            className="rounded-lg p-2 transition-colors hover:bg-[#FAF6F0]"
+            aria-label="Voltar"
           >
             <ArrowLeft size={24} className="text-[#1A0A08]" />
           </button>
-          <h1 className="text-2xl font-bold text-[#1A0A08]">Novo pedido</h1>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">Pedidos</p>
+            <h1 className="text-2xl font-bold text-[#1A0A08]">Novo pedido</h1>
+          </div>
         </div>
       </div>
 
-      {/* Form */}
-      <div className="px-4 lg:px-6 py-6 max-w-4xl mx-auto">
+      <main className="mx-auto max-w-4xl px-4 py-6 lg:px-6">
         {error && (
-          <div className="mb-4 p-4 rounded-lg bg-red-100 border border-red-300 text-red-800 text-sm">
-            {error}
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#C0392B]">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>{error}</span>
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Informações da Cliente */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <h2 className="font-bold text-[#1A0A08] mb-4">Informações da Cliente</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Informacoes da cliente</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Nome da Cliente *
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Nome da cliente *
                 </label>
                 <input
                   type="text"
@@ -374,159 +781,446 @@ export default function NovoPedidoPage() {
                   value={form.customer_name}
                   onChange={handleInputChange}
                   placeholder="Ex: Ana Silva"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Telefone
-                </label>
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">Telefone</label>
                 <input
                   type="tel"
                   name="customer_phone"
                   value={form.customer_phone}
                   onChange={handleInputChange}
                   placeholder="(11) 99999-9999"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Endereço de Entrega
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Endereco de entrega
                 </label>
                 <input
                   type="text"
                   name="address"
                   value={form.address}
                   onChange={handleInputChange}
-                  placeholder="Rua, número, complemento"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  placeholder="Rua, numero, complemento"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Informações do Pedido */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <h2 className="font-bold text-[#1A0A08] mb-4">Informações do Pedido</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Informacoes do pedido</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Nome do Pedido *
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Nome do pedido
                 </label>
                 <input
                   type="text"
                   name="product_name"
                   value={form.product_name}
                   onChange={handleInputChange}
-                  placeholder="Ex: Bolo Chocolate"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  placeholder="Ex: Festa da Maria"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Data do Pedido
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Data do pedido
                 </label>
                 <input
                   type="date"
                   name="order_date"
                   value={form.order_date}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Data de Entrega *
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Data da festa/evento *
                 </label>
                 <input
                   type="date"
                   name="delivery_date"
                   value={form.delivery_date}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Horário de Entrega *
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Horario de entrega *
                 </label>
                 <input
                   type="time"
                   name="delivery_time"
                   value={form.delivery_time}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Descrição do Produto
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Descricao geral
                 </label>
                 <textarea
                   name="description"
                   value={form.description}
                   onChange={handleInputChange}
-                  placeholder="Sabor, tamanho, decoração, etc."
+                  placeholder="Tema, preferencias, detalhes combinados..."
                   rows={3}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Valores */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <h2 className="font-bold text-[#1A0A08] mb-4">Valores e Pagamento</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Valor Total *
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  name="total_value"
-                  value={form.total_value}
-                  onChange={handleInputChange}
-                  placeholder="0.00"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
-                />
+                <h2 className="font-bold text-[#1A0A08]">Itens do pedido</h2>
+                <p className="mt-1 text-sm text-[#999999]">
+                  Escolha produtos cadastrados, quantidades, precos e sabores.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addOrderItem}
+                disabled={isLoadingData || recipes.length === 0}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Plus size={18} aria-hidden="true" />
+                <span>Adicionar produto</span>
+              </button>
+            </div>
+
+            {isLoadingData ? (
+              <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
+                Carregando produtos...
+              </div>
+            ) : recipes.length === 0 ? (
+              <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#1A0A08]">
+                Nenhum produto cadastrado. Cadastre receitas/produtos antes de criar pedidos.
+              </div>
+            ) : orderItems.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                Adicione o primeiro produto para calcular o total automaticamente.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {orderItems.map((item, index) => {
+                  const subtotal = parseDecimal(item.quantity) * parseDecimal(item.unit_price)
+                  const isKit = item.product_type === 'kit'
+
+                  return (
+                    <div
+                      key={item.localId}
+                      className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Package size={18} className="text-[#C9A84C]" aria-hidden="true" />
+                          <p className="font-bold text-[#1A0A08]">Item {index + 1}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeOrderItem(item.localId)}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                          aria-label="Remover produto"
+                        >
+                          <Trash2 size={17} aria-hidden="true" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_110px_130px_140px] md:items-end">
+                        <div>
+                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                            Produto
+                          </label>
+                          <select
+                            value={item.recipe_id}
+                            onChange={(event) =>
+                              updateOrderItem(item.localId, 'recipe_id', event.target.value)
+                            }
+                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                          >
+                            {recipes.map((recipe) => (
+                              <option key={recipe.id} value={recipe.id}>
+                                {recipe.name} {recipe.product_type === 'kit' ? '(kit)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                            Quantidade
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            inputMode="decimal"
+                            value={item.quantity}
+                            onChange={(event) =>
+                              updateOrderItem(item.localId, 'quantity', event.target.value)
+                            }
+                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                            Preco unitario
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            inputMode="decimal"
+                            value={item.unit_price}
+                            onChange={(event) =>
+                              updateOrderItem(item.localId, 'unit_price', event.target.value)
+                            }
+                            className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                          />
+                        </div>
+
+                        <div className="rounded-lg bg-white p-3">
+                          <p className="text-xs font-medium text-[#999999]">Subtotal</p>
+                          <p className="mt-1 font-bold text-[#1A0A08]">
+                            {formatCurrency(subtotal)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3">
+                        <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                          Observacoes do item
+                        </label>
+                        <input
+                          type="text"
+                          value={item.notes}
+                          onChange={(event) =>
+                            updateOrderItem(item.localId, 'notes', event.target.value)
+                          }
+                          placeholder="Ex: sem granulado, entregar separado..."
+                          className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </div>
+
+                      {!isKit && (
+                        <div className="mt-4 rounded-lg bg-white p-3">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-bold text-[#1A0A08]">Sabores/variacoes</p>
+                            <button
+                              type="button"
+                              onClick={() => addFlavor(item.localId)}
+                              className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
+                            >
+                              <Plus size={15} aria-hidden="true" />
+                              <span>Adicionar sabor</span>
+                            </button>
+                          </div>
+
+                          {item.flavors.length === 0 ? (
+                            <p className="text-sm text-[#999999]">Nenhum sabor informado.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {item.flavors.map((flavor) => (
+                                <div
+                                  key={flavor.localId}
+                                  className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
+                                >
+                                  <input
+                                    type="text"
+                                    value={flavor.name}
+                                    onChange={(event) =>
+                                      updateFlavor(
+                                        item.localId,
+                                        flavor.localId,
+                                        'name',
+                                        event.target.value
+                                      )
+                                    }
+                                    placeholder="Sabor"
+                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                  />
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={flavor.quantity}
+                                    onChange={(event) =>
+                                      updateFlavor(
+                                        item.localId,
+                                        flavor.localId,
+                                        'quantity',
+                                        event.target.value
+                                      )
+                                    }
+                                    placeholder="Qtd."
+                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeFlavor(item.localId, flavor.localId)}
+                                    className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                    aria-label="Remover sabor"
+                                  >
+                                    <Trash2 size={16} aria-hidden="true" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {isKit && (
+                        <div className="mt-4 space-y-3 rounded-lg bg-white p-3">
+                          <p className="text-sm font-bold text-[#1A0A08]">Subitens do kit</p>
+                          {item.kit_subitems.length === 0 ? (
+                            <p className="text-sm text-[#999999]">
+                              Este kit nao tem composicao cadastrada.
+                            </p>
+                          ) : (
+                            item.kit_subitems.map((subItem) => (
+                              <div
+                                key={subItem.localId}
+                                className="rounded-lg border border-[rgba(26,10,8,0.07)] p-3"
+                              >
+                                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                  <div>
+                                    <p className="font-semibold text-[#1A0A08]">
+                                      {subItem.item_name}
+                                    </p>
+                                    <p className="text-xs text-[#999999]">
+                                      Quantidade do kit: {subItem.quantity}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => addSubItemFlavor(item.localId, subItem.localId)}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
+                                  >
+                                    <Plus size={15} aria-hidden="true" />
+                                    <span>Adicionar sabor</span>
+                                  </button>
+                                </div>
+
+                                {subItem.flavors.length > 0 && (
+                                  <div className="mt-3 space-y-2">
+                                    {subItem.flavors.map((flavor) => (
+                                      <div
+                                        key={flavor.localId}
+                                        className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
+                                      >
+                                        <input
+                                          type="text"
+                                          value={flavor.name}
+                                          onChange={(event) =>
+                                            updateSubItemFlavor(
+                                              item.localId,
+                                              subItem.localId,
+                                              flavor.localId,
+                                              'name',
+                                              event.target.value
+                                            )
+                                          }
+                                          placeholder="Sabor"
+                                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                        />
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          value={flavor.quantity}
+                                          onChange={(event) =>
+                                            updateSubItemFlavor(
+                                              item.localId,
+                                              subItem.localId,
+                                              flavor.localId,
+                                              'quantity',
+                                              event.target.value
+                                            )
+                                          }
+                                          placeholder="Qtd."
+                                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            removeSubItemFlavor(
+                                              item.localId,
+                                              subItem.localId,
+                                              flavor.localId
+                                            )
+                                          }
+                                          className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                          aria-label="Remover sabor do subitem"
+                                        >
+                                          <Trash2 size={16} aria-hidden="true" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Valores e pagamento</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="rounded-lg bg-[#FAF6F0] p-4">
+                <p className="text-sm text-[#999999]">Valor total automatico</p>
+                <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
+                  {formatCurrency(orderTotal)}
+                </p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Valor do Sinal
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Valor do sinal
                 </label>
                 <input
                   type="number"
                   step="0.01"
+                  min="0"
                   name="deposit_value"
                   value={form.deposit_value}
                   onChange={handleInputChange}
                   placeholder="0.00"
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Valor Restante
-                </label>
-                <input
-                  type="text"
-                  value={`R$ ${form.remaining_value.toFixed(2)}`}
-                  disabled
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-[#FAF6F0] text-[#1A0A08] cursor-not-allowed"
-                />
+              <div className="rounded-lg bg-[#FAF6F0] p-4">
+                <p className="text-sm text-[#999999]">Valor restante</p>
+                <p className="mt-1 text-xl font-bold text-[#1A0A08]">
+                  {formatCurrency(remainingValue)}
+                </p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Forma de Pagamento do Sinal
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Forma de pagamento do sinal
                 </label>
                 <select
                   name="payment_method"
                   value={form.payment_method}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 >
                   {paymentMethods.map((method) => (
                     <option key={method.id} value={method.id}>
@@ -536,14 +1230,14 @@ export default function NovoPedidoPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Forma de Pagamento do Restante
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Forma de pagamento do restante
                 </label>
                 <select
                   name="remaining_payment_method"
                   value={form.remaining_payment_method}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 >
                   {paymentMethods.map((method) => (
                     <option key={method.id} value={method.id}>
@@ -553,130 +1247,122 @@ export default function NovoPedidoPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Data de Recebimento do Sinal
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Data de recebimento do sinal
                 </label>
                 <input
                   type="date"
                   name="deposit_payment_date"
                   value={form.deposit_payment_date}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-                  Data de Recebimento do Restante
+                <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                  Data de recebimento do restante
                 </label>
                 <input
                   type="date"
                   name="remaining_payment_date"
                   value={form.remaining_payment_date}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Status */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <h2 className="font-bold text-[#1A0A08] mb-4">Status Inicial</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Status inicial</h2>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
               {statusOptions.map((option) => (
                 <button
                   key={option.id}
                   type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, status: option.id }))}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
+                  onClick={() => setForm((currentForm) => ({ ...currentForm, status: option.id }))}
+                  className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                     form.status === option.id
                       ? 'bg-[#C0392B] text-white'
-                      : 'bg-[#FAF6F0] text-[#1A0A08] hover:bg-white border border-[rgba(26,10,8,0.07)]'
+                      : 'border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] text-[#1A0A08] hover:bg-white'
                   }`}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
-          </div>
+          </section>
 
-          {/* Fotos de Referência */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <h2 className="font-bold text-[#1A0A08] mb-4">Fotos de Referência</h2>
-            <div className="mb-4">
-              <label className="flex items-center justify-center border-2 border-dashed border-[rgba(26,10,8,0.2)] rounded-lg p-6 cursor-pointer hover:bg-[#FAF6F0] transition-colors">
-                <div className="text-center">
-                  <Upload size={24} className="text-[#C0392B] mx-auto mb-2" />
-                  <p className="text-sm font-medium text-[#1A0A08]">Clique para enviar fotos</p>
-                  <p className="text-xs text-[#999999]">ou arraste aqui</p>
-                </div>
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                />
-              </label>
-            </div>
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <h2 className="mb-4 font-bold text-[#1A0A08]">Fotos de referencia</h2>
+            <label className="flex cursor-pointer items-center justify-center rounded-lg border-2 border-dashed border-[rgba(26,10,8,0.2)] p-6 transition-colors hover:bg-[#FAF6F0]">
+              <div className="text-center">
+                <Upload size={24} className="mx-auto mb-2 text-[#C0392B]" aria-hidden="true" />
+                <p className="text-sm font-medium text-[#1A0A08]">Clique para enviar fotos</p>
+                <p className="text-xs text-[#999999]">ou arraste aqui</p>
+              </div>
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </label>
 
             {images.length > 0 && (
-              <div>
-                <p className="text-sm font-medium text-[#1A0A08] mb-2">
-                  {images.length} arquivo(s) selecionado(s)
-                </p>
-                <div className="space-y-2">
-                  {images.map((image, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-[#FAF6F0] rounded-lg">
-                      <p className="text-sm text-[#1A0A08] truncate">{image.name}</p>
-                      <button
-                        type="button"
-                        onClick={() => removeImage(idx)}
-                        className="p-1 hover:bg-white rounded transition-colors text-[#999999] hover:text-[#C0392B]"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+              <div className="mt-4 space-y-2">
+                {images.map((image, index) => (
+                  <div
+                    key={`${image.name}-${index}`}
+                    className="flex items-center justify-between rounded-lg bg-[#FAF6F0] p-3"
+                  >
+                    <p className="truncate text-sm text-[#1A0A08]">{image.name}</p>
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="rounded p-1 text-[#999999] transition-colors hover:bg-white hover:text-[#C0392B]"
+                      aria-label="Remover foto"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
-          </div>
+          </section>
 
-          {/* Observações */}
-          <div className="bg-white rounded-[16px] border border-[rgba(26,10,8,0.07)] p-6">
-            <label className="block text-sm font-medium text-[#1A0A08] mb-2">
-              Observações
-            </label>
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <label className="mb-2 block text-sm font-medium text-[#1A0A08]">Observacoes</label>
             <textarea
               name="notes"
               value={form.notes}
               onChange={handleInputChange}
-              placeholder="Anotações adicionais..."
+              placeholder="Anotacoes adicionais..."
               rows={4}
-              className="w-full px-3 py-2 border border-[rgba(26,10,8,0.07)] rounded-lg bg-white text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
             />
-          </div>
+          </section>
 
-          {/* Botões */}
-          <div className="flex gap-3 sticky bottom-0 bg-white border-t border-[rgba(26,10,8,0.07)] p-4 -mx-4 -mb-8">
+          <div className="-mx-4 -mb-8 flex gap-3 border-t border-[rgba(26,10,8,0.07)] bg-white p-4">
             <button
               type="button"
               onClick={() => router.back()}
-              className="flex-1 px-4 py-2 rounded-lg border border-[rgba(26,10,8,0.07)] text-[#1A0A08] font-medium hover:bg-[#FAF6F0] transition-colors"
+              className="flex-1 rounded-lg border border-[rgba(26,10,8,0.07)] px-4 py-2 font-medium text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              disabled={isLoading}
-              className="flex-1 px-4 py-2 rounded-lg bg-[#C0392B] hover:bg-[#A0301F] text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isSubmitting}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2 font-medium text-white transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isLoading ? 'Salvando...' : 'Criar Pedido'}
+              <Save size={18} aria-hidden="true" />
+              <span>{isSubmitting ? 'Salvando...' : 'Criar pedido'}</span>
             </button>
           </div>
         </form>
-      </div>
+      </main>
     </div>
   )
 }

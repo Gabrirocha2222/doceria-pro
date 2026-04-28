@@ -15,6 +15,7 @@ import {
 import { createClient } from '@/lib/supabase/client'
 
 type NumericValue = number | string | null | undefined
+type ProductType = 'simples' | 'kit'
 
 type SupabaseErrorLike = {
   message?: string
@@ -35,6 +36,9 @@ interface Recipe {
   profit_margin: NumericValue
   suggested_price: NumericValue
   sale_price: NumericValue
+  product_type: ProductType | null
+  is_third_party: boolean | null
+  supplier_id: string | null
   instructions: string | null
   notes: string | null
   created_at?: string
@@ -42,6 +46,15 @@ interface Recipe {
 
 type RecipePackagingLink = {
   recipe_id: string
+}
+
+type ProductKitLink = {
+  kit_recipe_id: string
+}
+
+type Supplier = {
+  id: string
+  name: string
 }
 
 function parseNumericValue(value: NumericValue) {
@@ -98,6 +111,8 @@ export default function ReceitasPage() {
   const [packagingCountByRecipeId, setPackagingCountByRecipeId] = useState<Record<string, number>>(
     {}
   )
+  const [kitItemCountByRecipeId, setKitItemCountByRecipeId] = useState<Record<string, number>>({})
+  const [supplierNameById, setSupplierNameById] = useState<Record<string, string>>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -131,6 +146,15 @@ export default function ReceitasPage() {
         const recipeRows = (data ?? []) as Recipe[]
         const recipeIds = recipeRows.map((recipe) => recipe.id)
         const packagingCounts = new Map<string, number>()
+        const kitItemCounts = new Map<string, number>()
+        const supplierIds = Array.from(
+          new Set(
+            recipeRows
+              .map((recipe) => recipe.supplier_id)
+              .filter((supplierId): supplierId is string => Boolean(supplierId))
+          )
+        )
+        const supplierNames = new Map<string, string>()
 
         if (recipeIds.length > 0) {
           const { data: packagingLinks, error: packagingError } = await supabase
@@ -148,11 +172,50 @@ export default function ReceitasPage() {
               packagingCounts.set(link.recipe_id, (packagingCounts.get(link.recipe_id) ?? 0) + 1)
             })
           }
+
+          const { data: kitLinks, error: kitItemsError } = await supabase
+            .from('product_kit_items')
+            .select('kit_recipe_id')
+            .eq('user_id', user.id)
+            .in('kit_recipe_id', recipeIds)
+
+          if (kitItemsError) {
+            logSupabaseError('Erro Supabase product_kit_items:', kitItemsError)
+          } else {
+            const links = (kitLinks ?? []) as ProductKitLink[]
+
+            links.forEach((link) => {
+              kitItemCounts.set(
+                link.kit_recipe_id,
+                (kitItemCounts.get(link.kit_recipe_id) ?? 0) + 1
+              )
+            })
+          }
+        }
+
+        if (supplierIds.length > 0) {
+          const { data: suppliersData, error: suppliersError } = await supabase
+            .from('suppliers')
+            .select('id, name')
+            .eq('user_id', user.id)
+            .in('id', supplierIds)
+
+          if (suppliersError) {
+            logSupabaseError('Erro Supabase suppliers:', suppliersError)
+          } else {
+            const supplierRows = (suppliersData ?? []) as Supplier[]
+
+            supplierRows.forEach((supplier) => {
+              supplierNames.set(supplier.id, supplier.name)
+            })
+          }
         }
 
         if (isMounted) {
           setRecipes(recipeRows)
           setPackagingCountByRecipeId(Object.fromEntries(packagingCounts))
+          setKitItemCountByRecipeId(Object.fromEntries(kitItemCounts))
+          setSupplierNameById(Object.fromEntries(supplierNames))
         }
       } catch (err) {
         console.error('Erro ao carregar receitas:', err)
@@ -264,6 +327,13 @@ export default function ReceitasPage() {
               const usesSuggestedPrice = recipe.sale_price == null
               const packagingCount = packagingCountByRecipeId[recipe.id] ?? 0
               const hasPackaging = packagingCount > 0
+              const productType = recipe.product_type === 'kit' ? 'kit' : 'simples'
+              const isKit = productType === 'kit'
+              const isThirdParty = recipe.is_third_party === true
+              const kitItemCount = kitItemCountByRecipeId[recipe.id] ?? 0
+              const supplierName = recipe.supplier_id
+                ? supplierNameById[recipe.supplier_id]
+                : undefined
 
               return (
                 <article
@@ -283,6 +353,17 @@ export default function ReceitasPage() {
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#FAF6F0] text-[#C0392B]">
                       <Utensils size={21} aria-hidden="true" />
                     </div>
+                  </div>
+
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    <span className="rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-semibold text-[#1A0A08]">
+                      {isKit ? 'Kit' : 'Produto simples'}
+                    </span>
+                    {isThirdParty && (
+                      <span className="rounded-full bg-[#F8EFE0] px-3 py-1 text-xs font-semibold text-[#8A6B1F]">
+                        Terceirizado
+                      </span>
+                    )}
                   </div>
 
                   <div className="mb-4 space-y-3">
@@ -320,6 +401,26 @@ export default function ReceitasPage() {
                       </div>
                     </div>
                   </div>
+
+                  {isKit && (
+                    <div className="mb-4 rounded-lg bg-[#FAF6F0] p-3 text-sm">
+                      <p className="font-semibold text-[#1A0A08]">
+                        {kitItemCount === 1 ? '1 item no kit' : `${kitItemCount} itens no kit`}
+                      </p>
+                      <p className="mt-1 text-xs text-[#999999]">
+                        Custo calculado pela composicao cadastrada.
+                      </p>
+                    </div>
+                  )}
+
+                  {isThirdParty && (
+                    <div className="mb-4 rounded-lg bg-[#FAF6F0] p-3 text-sm">
+                      <p className="font-semibold text-[#1A0A08]">Terceirizado</p>
+                      <p className="mt-1 text-xs text-[#999999]">
+                        {supplierName ? `Fornecedor: ${supplierName}` : 'Fornecedor nao definido'}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="mb-4 flex items-center gap-3 rounded-lg bg-[#FAF6F0] p-3 text-sm">
                     <Package
