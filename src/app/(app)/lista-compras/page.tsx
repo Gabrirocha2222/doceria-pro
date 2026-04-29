@@ -48,10 +48,17 @@ type Ingredient = {
   user_id: string
   name: string
   category: string | null
+  supplier_id: string | null
   usage_unit: string | null
   cost_per_unit: NumericValue
   stock_quantity: NumericValue
   stock_unit: string | null
+}
+
+type Supplier = {
+  id: string
+  user_id: string
+  name: string
 }
 
 type RecipePackaging = {
@@ -512,6 +519,7 @@ export default function ListaComprasPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([])
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [recipePackaging, setRecipePackaging] = useState<RecipePackaging[]>([])
   const [packagingItems, setPackagingItems] = useState<Packaging[]>([])
   const [orders, setOrders] = useState<Order[]>([])
@@ -571,6 +579,7 @@ export default function ListaComprasPage() {
 
         let loadedRecipeIngredients: RecipeIngredient[] = []
         let loadedIngredients: Ingredient[] = []
+        let loadedSuppliers: Supplier[] = []
         let loadedRecipePackaging: RecipePackaging[] = []
         let loadedPackagingItems: Packaging[] = []
 
@@ -596,7 +605,7 @@ export default function ListaComprasPage() {
             const { data: ingredientsData, error: ingredientsError } = await supabase
               .from('ingredients')
               .select(
-                'id, user_id, name, category, usage_unit, cost_per_unit, stock_quantity, stock_unit'
+                'id, user_id, name, category, supplier_id, usage_unit, cost_per_unit, stock_quantity, stock_unit'
               )
               .eq('user_id', user.id)
               .in('id', ingredientIds)
@@ -638,6 +647,16 @@ export default function ListaComprasPage() {
           }
         }
 
+        const { data: suppliersData, error: suppliersError } = await supabase
+          .from('suppliers')
+          .select('id, user_id, name')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (suppliersError) throw suppliersError
+
+        loadedSuppliers = (suppliersData ?? []) as Supplier[]
+
         const { data: ordersData, error: ordersError } = await supabase
           .from('orders')
           .select(
@@ -678,6 +697,7 @@ export default function ListaComprasPage() {
           setRecipes(loadedRecipes.filter((recipe) => recipe.is_third_party !== true))
           setRecipeIngredients(loadedRecipeIngredients)
           setIngredients(loadedIngredients)
+          setSuppliers(loadedSuppliers)
           setRecipePackaging(loadedRecipePackaging)
           setPackagingItems(loadedPackagingItems)
           setOrders(loadedOrders)
@@ -728,6 +748,10 @@ export default function ListaComprasPage() {
   const ingredientById = useMemo(() => {
     return new Map(ingredients.map((ingredient) => [ingredient.id, ingredient]))
   }, [ingredients])
+
+  const supplierById = useMemo(() => {
+    return new Map(suppliers.map((supplier) => [supplier.id, supplier]))
+  }, [suppliers])
 
   const recipePackagingByRecipeId = useMemo(() => {
     return recipePackaging.reduce<Map<string, RecipePackaging[]>>((groups, item) => {
@@ -788,6 +812,9 @@ export default function ListaComprasPage() {
         const unit = recipeItem.unit?.trim() || ingredient?.usage_unit?.trim() || 'unidade'
         const neededQuantity = parseNumber(recipeItem.quantity) * ingredientFactor
         const stockUnit = ingredient?.stock_unit?.trim() || ingredient?.usage_unit?.trim() || unit
+        const supplierName = ingredient?.supplier_id
+          ? supplierById.get(ingredient.supplier_id)?.name ?? 'Sem fornecedor definido'
+          : 'Sem fornecedor definido'
 
         addQuantityToAccumulator(accumulator, {
           itemKey: `ingredient:${recipeItem.ingredient_id}`,
@@ -795,7 +822,7 @@ export default function ListaComprasPage() {
           sourceId: recipeItem.ingredient_id,
           name: ingredient?.name || 'Ingrediente nao encontrado',
           category: ingredient?.category?.trim() || 'Sem categoria',
-          supplierName: 'Sem fornecedor',
+          supplierName,
           quantity: neededQuantity,
           unit,
           costPerUnit: ingredient?.cost_per_unit ?? null,
@@ -883,6 +910,7 @@ export default function ListaComprasPage() {
     scopedOrders,
     selectedRecipes,
     shoppingMode,
+    supplierById,
   ])
 
   const allPurchaseItems = [...shoppingList.ingredients, ...shoppingList.packaging]

@@ -23,8 +23,14 @@ interface Ingredient {
   cost_per_unit: number | null
   stock_quantity: number | null
   stock_unit: string | null
+  supplier_id: string | null
   user_id: string
   created_at: string
+}
+
+type Supplier = {
+  id: string
+  name: string
 }
 
 type IngredientEditForm = {
@@ -37,6 +43,7 @@ type IngredientEditForm = {
   cost_per_unit: string
   stock_quantity: string
   stock_unit: string
+  supplier_id: string
 }
 
 const categoryLabels: Record<string, string> = {
@@ -99,12 +106,15 @@ function buildEditForm(ingredient: Ingredient): IngredientEditForm {
     cost_per_unit: String(ingredient.cost_per_unit ?? ''),
     stock_quantity: String(ingredient.stock_quantity ?? ''),
     stock_unit: ingredient.stock_unit ?? '',
+    supplier_id: ingredient.supplier_id ?? '',
   }
 }
 
 export default function IngredientesPage() {
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [searchQuery, setSearchQuery] = useState('')
+  const [supplierFilter, setSupplierFilter] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<IngredientEditForm | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -130,16 +140,25 @@ export default function IngredientesPage() {
           throw new Error('Usuário não autenticado')
         }
 
-        const { data, error: ingredientsError } = await supabase
-          .from('ingredients')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('name', { ascending: true })
+        const [ingredientsResponse, suppliersResponse] = await Promise.all([
+          supabase
+            .from('ingredients')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('name', { ascending: true }),
+          supabase
+            .from('suppliers')
+            .select('id, name')
+            .eq('user_id', user.id)
+            .order('name', { ascending: true }),
+        ])
 
-        if (ingredientsError) throw ingredientsError
+        if (ingredientsResponse.error) throw ingredientsResponse.error
+        if (suppliersResponse.error) throw suppliersResponse.error
 
         if (isMounted) {
-          setIngredients((data ?? []) as Ingredient[])
+          setIngredients((ingredientsResponse.data ?? []) as Ingredient[])
+          setSuppliers((suppliersResponse.data ?? []) as Supplier[])
         }
       } catch (err) {
         logSupabaseError('Erro ao carregar ingredientes:', err)
@@ -163,12 +182,27 @@ export default function IngredientesPage() {
   const filteredIngredients = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
-    if (!query) return ingredients
+    return ingredients.filter((ingredient) => {
+      const matchesSearch = !query || ingredient.name.toLowerCase().includes(query)
+      const matchesSupplier =
+        !supplierFilter ||
+        (supplierFilter === 'none'
+          ? !ingredient.supplier_id
+          : ingredient.supplier_id === supplierFilter)
 
-    return ingredients.filter((ingredient) =>
-      ingredient.name.toLowerCase().includes(query)
-    )
-  }, [ingredients, searchQuery])
+      return matchesSearch && matchesSupplier
+    })
+  }, [ingredients, searchQuery, supplierFilter])
+
+  const supplierById = useMemo(() => {
+    return new Map(suppliers.map((supplier) => [supplier.id, supplier]))
+  }, [suppliers])
+
+  function getSupplierName(supplierId: string | null) {
+    if (!supplierId) return 'Sem fornecedor'
+
+    return supplierById.get(supplierId)?.name ?? 'Sem fornecedor'
+  }
 
   function startEdit(ingredient: Ingredient) {
     setEditingId(ingredient.id)
@@ -219,6 +253,7 @@ export default function IngredientesPage() {
         cost_per_unit: parseDecimal(editForm.cost_per_unit),
         stock_quantity: parseDecimal(editForm.stock_quantity),
         stock_unit: optionalText(editForm.stock_unit),
+        supplier_id: editForm.supplier_id || null,
       }
 
       const { error: updateError } = await supabase
@@ -318,23 +353,47 @@ export default function IngredientesPage() {
         )}
 
         <div className="mb-6">
-          <label className="sr-only" htmlFor="ingredient-search">
-            Buscar ingrediente por nome
-          </label>
-          <div className="relative">
-            <Search
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#999999]"
-              size={20}
-              aria-hidden="true"
-            />
-            <input
-              id="ingredient-search"
-              type="search"
-              placeholder="Buscar por nome..."
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-3 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
-            />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+            <div>
+              <label className="sr-only" htmlFor="ingredient-search">
+                Buscar ingrediente por nome
+              </label>
+              <div className="relative">
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[#999999]"
+                  size={20}
+                  aria-hidden="true"
+                />
+                <input
+                  id="ingredient-search"
+                  type="search"
+                  placeholder="Buscar por nome..."
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-3 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="sr-only" htmlFor="supplier-filter">
+                Filtrar por fornecedor
+              </label>
+              <select
+                id="supplier-filter"
+                value={supplierFilter}
+                onChange={(event) => setSupplierFilter(event.target.value)}
+                className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+              >
+                <option value="">Todos os fornecedores</option>
+                <option value="none">Sem fornecedor</option>
+                {suppliers.map((supplier) => (
+                  <option key={supplier.id} value={supplier.id}>
+                    {supplier.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -347,14 +406,16 @@ export default function IngredientesPage() {
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
             <Package className="mx-auto mb-4 h-12 w-12 text-[#C9A84C]" aria-hidden="true" />
             <p className="text-lg font-semibold text-[#1A0A08]">
-              {searchQuery ? 'Nenhum ingrediente encontrado' : 'Nenhum ingrediente cadastrado'}
+              {searchQuery || supplierFilter
+                ? 'Nenhum ingrediente encontrado'
+                : 'Nenhum ingrediente cadastrado'}
             </p>
             <p className="mt-1 text-sm text-[#999999]">
-              {searchQuery
+              {searchQuery || supplierFilter
                 ? 'Tente buscar por outro nome.'
                 : 'Cadastre seus insumos para acompanhar custos e alertas de estoque.'}
             </p>
-            {!searchQuery && (
+            {!searchQuery && !supplierFilter && (
               <Link
                 href="/ingredientes/novo"
                 className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
@@ -467,6 +528,18 @@ export default function IngredientesPage() {
                           placeholder="Unidade estoque"
                           className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                         />
+                        <select
+                          value={currentEditForm.supplier_id}
+                          onChange={(event) => updateEditForm('supplier_id', event.target.value)}
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        >
+                          <option value="">Sem fornecedor</option>
+                          {suppliers.map((supplier) => (
+                            <option key={supplier.id} value={supplier.id}>
+                              {supplier.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                   ) : null}
@@ -489,6 +562,14 @@ export default function IngredientesPage() {
                         <p className="text-xs font-medium text-[#999999]">Estoque atual</p>
                         <p className="mt-1 font-bold text-[#1A0A08]">
                           {ingredient.stock_quantity ?? 0} {stockUnit}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-[#999999]">
+                          Fornecedor preferencial
+                        </p>
+                        <p className="mt-1 font-bold text-[#1A0A08]">
+                          {getSupplierName(ingredient.supplier_id)}
                         </p>
                       </div>
                     </div>

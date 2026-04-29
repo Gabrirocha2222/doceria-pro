@@ -1,7 +1,8 @@
 'use client'
 
 import type { ChangeEvent, FormEvent } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Calculator, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -15,6 +16,12 @@ type IngredientForm = {
   usage_unit: string
   stock_quantity: string
   stock_unit: string
+  supplier_id: string
+}
+
+type Supplier = {
+  id: string
+  name: string
 }
 
 type UnitDefinition = {
@@ -115,14 +122,63 @@ const initialForm: IngredientForm = {
   usage_unit: '',
   stock_quantity: '',
   stock_unit: '',
+  supplier_id: '',
 }
 
 export default function NovoIngredientePage() {
   const [form, setForm] = useState<IngredientForm>(initialForm)
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSuppliers() {
+      setIsLoadingSuppliers(true)
+
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser()
+
+        if (userError || !user) {
+          throw new Error('Usuario nao autenticado')
+        }
+
+        const { data, error: suppliersError } = await supabase
+          .from('suppliers')
+          .select('id, name')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (suppliersError) throw suppliersError
+
+        if (isMounted) {
+          setSuppliers((data ?? []) as Supplier[])
+        }
+      } catch (err) {
+        console.error('Erro ao carregar fornecedores:', err)
+        if (isMounted) {
+          setError('Falha ao carregar fornecedores')
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingSuppliers(false)
+        }
+      }
+    }
+
+    void loadSuppliers()
+
+    return () => {
+      isMounted = false
+    }
+  }, [supabase])
 
   const purchaseQuantity = useMemo(
     () => parseDecimal(form.purchase_quantity),
@@ -201,6 +257,7 @@ export default function NovoIngredientePage() {
           cost_per_unit: costPerUnit,
           stock_quantity: stockQuantity,
           stock_unit: form.stock_unit.trim() || form.usage_unit.trim(),
+          supplier_id: form.supplier_id || null,
         },
       ])
 
@@ -284,6 +341,35 @@ export default function NovoIngredientePage() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="supplier_id">
+                  Fornecedor preferencial
+                </label>
+                <select
+                  id="supplier_id"
+                  name="supplier_id"
+                  value={form.supplier_id}
+                  onChange={handleChange}
+                  disabled={isLoadingSuppliers || suppliers.length === 0}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B] disabled:cursor-not-allowed disabled:bg-[#FAF6F0] disabled:text-[#999999]"
+                >
+                  <option value="">Sem fornecedor</option>
+                  {suppliers.map((supplier) => (
+                    <option key={supplier.id} value={supplier.id}>
+                      {supplier.name}
+                    </option>
+                  ))}
+                </select>
+                {!isLoadingSuppliers && suppliers.length === 0 && (
+                  <Link
+                    href="/fornecedores/novo"
+                    className="mt-2 inline-flex text-sm font-semibold text-[#C0392B] transition-colors hover:text-[#A0301F]"
+                  >
+                    Cadastre um fornecedor
+                  </Link>
+                )}
               </div>
 
               <div>
