@@ -7,9 +7,13 @@ import {
   Check,
   Clipboard,
   ClipboardCheck,
+  Eye,
+  EyeOff,
   PackageCheck,
   PackageSearch,
   RefreshCcw,
+  ReceiptText,
+  Save,
   ShoppingCart,
   Sparkles,
 } from 'lucide-react'
@@ -125,6 +129,8 @@ type ShoppingListItem = {
   quantityToBuy: number
   unit: string
   stockUnit: string
+  costPerUnit: NumericValue
+  costUnit: string
   estimatedCost: number | null
   hasMixedUnits: boolean
   sources: string[]
@@ -140,6 +146,11 @@ type ShoppingList = {
 type DateRange = {
   start: string
   end: string
+}
+
+type PurchaseItemRuntime = {
+  realUnitPrice?: string
+  purchasedQuantity?: string
 }
 
 const unitDefinitions: Record<string, UnitDefinition> = {
@@ -225,6 +236,12 @@ function formatNumber(value: number | null | undefined) {
   return new Intl.NumberFormat('pt-BR', {
     maximumFractionDigits: 3,
   }).format(value ?? 0)
+}
+
+function formatInputNumber(value: number) {
+  if (!Number.isFinite(value)) return ''
+
+  return String(Number(value.toFixed(3)))
 }
 
 function formatDate(date: string | null) {
@@ -323,6 +340,20 @@ function calculateEstimatedCost(
   return (convertedQuantity ?? quantity) * unitCost
 }
 
+function calculateEstimatedUnitPrice(item: ShoppingListItem) {
+  if (item.estimatedCost === null || item.quantityToBuy <= 0) return null
+
+  return item.estimatedCost / item.quantityToBuy
+}
+
+function convertUnitPrice(pricePerUnit: number, priceUnit: string, targetUnit: string) {
+  if (normalizeUnit(priceUnit) === normalizeUnit(targetUnit)) return pricePerUnit
+
+  const targetQuantityInPriceUnit = convertQuantity(1, targetUnit, priceUnit)
+
+  return targetQuantityInPriceUnit === null ? null : pricePerUnit * targetQuantityInPriceUnit
+}
+
 function sortShoppingItems(items: ShoppingListItem[]) {
   return [...items].sort((firstItem, secondItem) => {
     const supplierComparison = firstItem.supplierName.localeCompare(
@@ -418,6 +449,8 @@ function finalizeShoppingItem(item: AccumulatedPurchaseItem): ShoppingListItem {
     quantityToBuy,
     unit: item.unit,
     stockUnit: item.stockUnit,
+    costPerUnit: item.costPerUnit,
+    costUnit: item.costUnit,
     estimatedCost,
     hasMixedUnits:
       item.hasMixedUnits ||
@@ -488,10 +521,17 @@ export default function ListaComprasPage() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set())
   const [productionAmounts, setProductionAmounts] = useState<Record<string, string>>({})
   const [purchasedItemKeys, setPurchasedItemKeys] = useState<Set<string>>(new Set())
+  const [purchaseRuntimeByItemKey, setPurchaseRuntimeByItemKey] = useState<
+    Record<string, PurchaseItemRuntime>
+  >({})
+  const [showPurchasedItems, setShowPurchasedItems] = useState(false)
+  const [updatingPriceItemKey, setUpdatingPriceItemKey] = useState<string | null>(null)
+  const [isFinalizingPurchase, setIsFinalizingPurchase] = useState(false)
   const [hasGeneratedList, setHasGeneratedList] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [copyFeedback, setCopyFeedback] = useState('')
+  const [actionFeedback, setActionFeedback] = useState('')
   const supabase = useMemo(() => createClient(), [])
 
   const weekRange = useMemo(() => getCurrentWeekRange(), [])
@@ -845,21 +885,26 @@ export default function ListaComprasPage() {
     shoppingMode,
   ])
 
+  const allPurchaseItems = [...shoppingList.ingredients, ...shoppingList.packaging]
   const visibleIngredientItems = shoppingList.ingredients.filter(
-    (item) => !purchasedItemKeys.has(item.itemKey)
+    (item) => showPurchasedItems || !purchasedItemKeys.has(item.itemKey)
   )
   const visiblePackagingItems = shoppingList.packaging.filter(
-    (item) => !purchasedItemKeys.has(item.itemKey)
+    (item) => showPurchasedItems || !purchasedItemKeys.has(item.itemKey)
   )
-  const purchasedItems = [...shoppingList.ingredients, ...shoppingList.packaging].filter((item) =>
-    purchasedItemKeys.has(item.itemKey)
-  )
+  const purchasedItems = allPurchaseItems.filter((item) => purchasedItemKeys.has(item.itemKey))
   const visibleShoppingItems = [...visibleIngredientItems, ...visiblePackagingItems]
-  const totalEstimatedCost = visibleShoppingItems.reduce(
+  const totalEstimatedCost = allPurchaseItems.reduce(
     (sum, item) => sum + (item.estimatedCost ?? 0),
     0
   )
-  const hasUnavailableCosts = visibleShoppingItems.some((item) => item.estimatedCost === null)
+  const totalRealCost = allPurchaseItems.reduce(
+    (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedCost ?? 0),
+    0
+  )
+  const hasRealCosts = allPurchaseItems.some((item) => getItemRealTotal(item) !== null)
+  const totalDifference = totalRealCost - totalEstimatedCost
+  const hasUnavailableCosts = allPurchaseItems.some((item) => item.estimatedCost === null)
   const hasSelectedRecipes = selectedRecipeIds.size > 0
   const hasSelectedOrders = selectedOrderIds.size > 0
   const hasModeInput =
@@ -869,11 +914,16 @@ export default function ListaComprasPage() {
         ? hasSelectedOrders
         : scopedOrders.length > 0
   const canCopyList = hasGeneratedList && visibleShoppingItems.length > 0
+  const canFinalizePurchase =
+    hasGeneratedList && allPurchaseItems.length > 0 && !isFinalizingPurchase
 
   function resetGeneratedList() {
     setHasGeneratedList(false)
     setPurchasedItemKeys(new Set())
+    setPurchaseRuntimeByItemKey({})
+    setShowPurchasedItems(false)
     setCopyFeedback('')
+    setActionFeedback('')
   }
 
   function handleModeChange(mode: ShoppingMode) {
@@ -959,7 +1009,10 @@ export default function ListaComprasPage() {
 
     setError('')
     setCopyFeedback('')
+    setActionFeedback('')
     setPurchasedItemKeys(new Set())
+    setPurchaseRuntimeByItemKey({})
+    setShowPurchasedItems(false)
     setHasGeneratedList(true)
   }
 
@@ -976,13 +1029,227 @@ export default function ListaComprasPage() {
     resetGeneratedList()
   }
 
-  function markAsPurchased(itemKey: string) {
+  function getRealUnitPriceInputValue(item: ShoppingListItem) {
+    return purchaseRuntimeByItemKey[item.itemKey]?.realUnitPrice ?? ''
+  }
+
+  function getPurchasedQuantityInputValue(item: ShoppingListItem) {
+    return (
+      purchaseRuntimeByItemKey[item.itemKey]?.purchasedQuantity ??
+      formatInputNumber(item.quantityToBuy)
+    )
+  }
+
+  function getItemRealTotal(item: ShoppingListItem) {
+    const realUnitPrice = parseNumber(getRealUnitPriceInputValue(item))
+    const purchasedQuantity = parseNumber(getPurchasedQuantityInputValue(item))
+
+    if (realUnitPrice <= 0 || purchasedQuantity <= 0) return null
+
+    return realUnitPrice * purchasedQuantity
+  }
+
+  function updatePurchaseRuntime(
+    itemKey: string,
+    field: keyof PurchaseItemRuntime,
+    value: string
+  ) {
+    setPurchaseRuntimeByItemKey((currentRuntime) => ({
+      ...currentRuntime,
+      [itemKey]: {
+        ...currentRuntime[itemKey],
+        [field]: value,
+      },
+    }))
+    setError('')
+    setActionFeedback('')
+    setCopyFeedback('')
+  }
+
+  function setItemPurchased(item: ShoppingListItem, isPurchased: boolean) {
     setPurchasedItemKeys((currentKeys) => {
       const nextKeys = new Set(currentKeys)
-      nextKeys.add(itemKey)
+
+      if (isPurchased) {
+        nextKeys.add(item.itemKey)
+      } else {
+        nextKeys.delete(item.itemKey)
+      }
+
       return nextKeys
     })
+
+    if (isPurchased) {
+      setPurchaseRuntimeByItemKey((currentRuntime) => {
+        const currentItemRuntime = currentRuntime[item.itemKey] ?? {}
+
+        if (currentItemRuntime.purchasedQuantity !== undefined) return currentRuntime
+
+        return {
+          ...currentRuntime,
+          [item.itemKey]: {
+            ...currentItemRuntime,
+            purchasedQuantity: formatInputNumber(item.quantityToBuy),
+          },
+        }
+      })
+    }
+
+    setActionFeedback('')
     setCopyFeedback('')
+  }
+
+  async function handleUpdateStandardPrice(item: ShoppingListItem) {
+    const realUnitPrice = parseNumber(getRealUnitPriceInputValue(item))
+
+    if (realUnitPrice <= 0) {
+      setError('Informe um preco real unitario maior que zero para atualizar o padrao.')
+      return
+    }
+
+    const standardPrice = convertUnitPrice(realUnitPrice, item.unit, item.costUnit)
+
+    if (standardPrice === null || standardPrice <= 0) {
+      setError(
+        `Nao foi possivel converter o preco de ${item.unit} para ${item.costUnit}. Ajuste a unidade antes de atualizar o padrao.`
+      )
+      return
+    }
+
+    setUpdatingPriceItemKey(item.itemKey)
+    setError('')
+    setActionFeedback('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      if (item.kind === 'ingredient') {
+        const { error: updateError } = await supabase
+          .from('ingredients')
+          .update({ cost_per_unit: standardPrice })
+          .eq('id', item.sourceId)
+          .eq('user_id', user.id)
+
+        if (updateError) throw updateError
+
+        setIngredients((currentIngredients) =>
+          currentIngredients.map((ingredient) =>
+            ingredient.id === item.sourceId
+              ? { ...ingredient, cost_per_unit: standardPrice }
+              : ingredient
+          )
+        )
+      } else {
+        const { error: updateError } = await supabase
+          .from('packaging')
+          .update({ cost_per_unit: standardPrice })
+          .eq('id', item.sourceId)
+          .eq('user_id', user.id)
+
+        if (updateError) throw updateError
+
+        setPackagingItems((currentItems) =>
+          currentItems.map((packaging) =>
+            packaging.id === item.sourceId
+              ? { ...packaging, cost_per_unit: standardPrice }
+              : packaging
+          )
+        )
+      }
+
+      setActionFeedback(
+        item.kind === 'packaging'
+          ? `Preco padrao de "${item.name}" atualizado em cost_per_unit.`
+          : `Preco padrao de "${item.name}" atualizado.`
+      )
+    } catch (err) {
+      console.error('Erro ao atualizar preco padrao:', err)
+      const message = err instanceof Error ? err.message : 'Falha ao atualizar preco padrao'
+      setError(message)
+    } finally {
+      setUpdatingPriceItemKey(null)
+    }
+  }
+
+  async function handleFinalizePurchase() {
+    if (!canFinalizePurchase) return
+
+    const itemsForTransaction = purchasedItems.length > 0 ? purchasedItems : allPurchaseItems
+    const estimatedAmount = itemsForTransaction.reduce(
+      (sum, item) => sum + (item.estimatedCost ?? 0),
+      0
+    )
+    const hasRealAmount = itemsForTransaction.some((item) => getItemRealTotal(item) !== null)
+    const realAmount = itemsForTransaction.reduce(
+      (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedCost ?? 0),
+      0
+    )
+    const transactionAmount = hasRealAmount ? realAmount : estimatedAmount
+
+    if (transactionAmount <= 0) {
+      setError('Nao ha valor calculado para criar a saida financeira.')
+      return
+    }
+
+    setIsFinalizingPurchase(true)
+    setError('')
+    setActionFeedback('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('Usuario nao autenticado')
+      }
+
+      const notes = itemsForTransaction
+        .map((item) => {
+          const quantity = parseNumber(getPurchasedQuantityInputValue(item)) || item.quantityToBuy
+          const realTotal = getItemRealTotal(item)
+          const totalLabel =
+            realTotal === null
+              ? `estimado ${formatCurrency(item.estimatedCost)}`
+              : `real ${formatCurrency(realTotal)}`
+
+          return `${item.name}: ${formatNumber(quantity)} ${item.unit} - ${totalLabel}`
+        })
+        .join('\n')
+
+      const { error: insertError } = await supabase.from('financial_transactions').insert([
+        {
+          user_id: user.id,
+          description: 'Compra de itens da lista',
+          type: 'saida',
+          amount: transactionAmount,
+          category: 'Ingredientes/Embalagens',
+          transaction_date: formatInputDate(new Date()),
+          notes,
+        },
+      ])
+
+      if (insertError) throw insertError
+
+      setActionFeedback('Saida financeira criada para a compra da lista.')
+    } catch (err) {
+      console.error('Erro ao finalizar compra:', err)
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Nao foi possivel criar a saida financeira. Confira se financial_transactions existe.'
+      setError(message)
+    } finally {
+      setIsFinalizingPurchase(false)
+    }
   }
 
   async function handleCopyList() {
@@ -995,9 +1262,16 @@ export default function ListaComprasPage() {
         supplierName,
         ...supplierItems.map((item) => {
           const costText =
-            item.estimatedCost === null ? 'custo estimado indisponivel' : formatCurrency(item.estimatedCost)
+            item.estimatedCost === null
+              ? 'estimado indisponivel'
+              : `estimado ${formatCurrency(item.estimatedCost)}`
+          const realTotal = getItemRealTotal(item)
+          const realText = realTotal === null ? '' : ` - real ${formatCurrency(realTotal)}`
+          const statusText = purchasedItemKeys.has(item.itemKey) ? 'comprado' : 'pendente'
 
-          return `- ${item.name}: ${formatNumber(item.quantityToBuy)} ${item.unit} - ${costText}`
+          return `- [${statusText}] ${item.name}: ${formatNumber(item.quantityToBuy)} ${
+            item.unit
+          } - ${costText}${realText}`
         }),
       ]),
     ].join('\n')
@@ -1028,55 +1302,175 @@ export default function ListaComprasPage() {
               </span>
             </div>
 
-            {group.items.map((item) => (
-              <article
-                key={item.itemKey}
-                className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
-              >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <p className="break-words text-base font-bold text-[#1A0A08]">
-                      {item.name}
-                    </p>
-                    <p className="mt-1 text-sm text-[#999999]">
-                      Comprar {formatNumber(item.quantityToBuy)} {item.unit}
-                    </p>
-                    <p className="mt-1 text-xs text-[#999999]">
-                      Necessario {formatNumber(item.quantityNeeded)} {item.unit}
-                      {item.kind === 'ingredient' &&
-                        ` · estoque ${formatNumber(item.stockQuantity)} ${item.unit}`}
-                    </p>
-                    {item.sources.length > 0 && (
-                      <p className="mt-2 text-xs text-[#6F625F]">
-                        Origem: {item.sources.join(', ')}
-                      </p>
-                    )}
-                    {item.hasMixedUnits && (
-                      <p className="mt-2 text-xs font-semibold text-[#C0392B]">
-                        Ha unidades diferentes ou estoque em unidade incompativel.
-                      </p>
-                    )}
-                  </div>
+            {group.items.map((item) => {
+              const isPurchased = purchasedItemKeys.has(item.itemKey)
+              const estimatedUnitPrice = calculateEstimatedUnitPrice(item)
+              const realTotal = getItemRealTotal(item)
+              const realDifference =
+                realTotal === null ? null : realTotal - (item.estimatedCost ?? 0)
+              const realUnitPriceInput = getRealUnitPriceInputValue(item)
+              const purchasedQuantityInput = getPurchasedQuantityInputValue(item)
+              const canUpdateStandardPrice =
+                parseNumber(realUnitPriceInput) > 0 && updatingPriceItemKey !== item.itemKey
 
-                  <div className="flex shrink-0 flex-col gap-2 sm:items-end">
-                    <div className="rounded-lg bg-white px-3 py-2 sm:text-right">
-                      <p className="text-xs font-medium text-[#999999]">Custo estimado</p>
-                      <p className="mt-1 font-bold text-[#1A0A08]">
-                        {formatCurrency(item.estimatedCost)}
-                      </p>
+              return (
+                <article
+                  key={item.itemKey}
+                  className={`rounded-[16px] border p-4 transition-colors ${
+                    isPurchased
+                      ? 'border-[#BFE8CC] bg-[#F4FBF6]'
+                      : 'border-[rgba(26,10,8,0.07)] bg-[#FAF6F0]'
+                  }`}
+                >
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <p
+                          className={`break-words text-base font-bold text-[#1A0A08] ${
+                            isPurchased ? 'line-through decoration-2' : ''
+                          }`}
+                        >
+                          {item.name}
+                        </p>
+                        <p className="mt-1 text-sm text-[#999999]">
+                          Comprar {formatNumber(item.quantityToBuy)} {item.unit}
+                        </p>
+                        <p className="mt-1 text-xs text-[#999999]">
+                          Necessario {formatNumber(item.quantityNeeded)} {item.unit}
+                          {item.kind === 'ingredient' &&
+                            ` - estoque ${formatNumber(item.stockQuantity)} ${item.unit}`}
+                        </p>
+                        {item.sources.length > 0 && (
+                          <p className="mt-2 text-xs text-[#6F625F]">
+                            Origem: {item.sources.join(', ')}
+                          </p>
+                        )}
+                        {item.hasMixedUnits && (
+                          <p className="mt-2 text-xs font-semibold text-[#C0392B]">
+                            Ha unidades diferentes ou estoque em unidade incompativel.
+                          </p>
+                        )}
+                      </div>
+
+                      <label className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08]">
+                        <input
+                          type="checkbox"
+                          checked={isPurchased}
+                          onChange={(event) => setItemPurchased(item, event.target.checked)}
+                          className="h-4 w-4 rounded border-[rgba(26,10,8,0.18)] accent-[#1F7A3A]"
+                        />
+                        <span>Comprado</span>
+                      </label>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => markAsPurchased(item.itemKey)}
-                      className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD]"
-                    >
-                      <Check size={16} aria-hidden="true" />
-                      <span>Marcar como comprado</span>
-                    </button>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className="rounded-lg bg-white px-3 py-2">
+                        <p className="text-xs font-medium text-[#999999]">
+                          Preco estimado unitario
+                        </p>
+                        <p className="mt-1 font-bold text-[#1A0A08]">
+                          {formatCurrency(estimatedUnitPrice)}
+                          {estimatedUnitPrice !== null && (
+                            <span className="ml-1 text-xs font-semibold text-[#999999]">
+                              / {item.unit}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="rounded-lg bg-white px-3 py-2">
+                        <p className="text-xs font-medium text-[#999999]">Total estimado</p>
+                        <p className="mt-1 font-bold text-[#1A0A08]">
+                          {formatCurrency(item.estimatedCost)}
+                        </p>
+                      </div>
+
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                          Preco real unitario
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.0001"
+                          inputMode="decimal"
+                          value={realUnitPriceInput}
+                          onChange={(event) =>
+                            updatePurchaseRuntime(
+                              item.itemKey,
+                              'realUnitPrice',
+                              event.target.value
+                            )
+                          }
+                          placeholder="0,00"
+                          className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                          Quantidade comprada
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          inputMode="decimal"
+                          value={purchasedQuantityInput}
+                          onChange={(event) =>
+                            updatePurchaseRuntime(
+                              item.itemKey,
+                              'purchasedQuantity',
+                              event.target.value
+                            )
+                          }
+                          className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                      </label>
+                    </div>
+
+                    {realTotal !== null && (
+                      <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="font-semibold text-[#1A0A08]">
+                            Total real: {formatCurrency(realTotal)}
+                          </p>
+                          <p
+                            className={`font-semibold ${
+                              realDifference !== null && realDifference > 0
+                                ? 'text-[#C0392B]'
+                                : 'text-[#1F7A3A]'
+                            }`}
+                          >
+                            Diferenca: {formatCurrency(realDifference)}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-[#999999]">
+                        Padrao atual: {formatCurrency(parseNumber(item.costPerUnit))} /{' '}
+                        {item.costUnit}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStandardPrice(item)}
+                        disabled={!canUpdateStandardPrice}
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Save size={16} aria-hidden="true" />
+                        <span>
+                          {updatingPriceItemKey === item.itemKey
+                            ? 'Atualizando...'
+                            : 'Atualizar preco padrao'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              )
+            })}
           </div>
         ))}
       </div>
@@ -1170,6 +1564,13 @@ export default function ListaComprasPage() {
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#C0392B]">
             <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {actionFeedback && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-[#BFE8CC] bg-[#F4FBF6] p-3 text-sm text-[#1F7A3A]">
+            <Check size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>{actionFeedback}</span>
           </div>
         )}
 
@@ -1362,19 +1763,36 @@ export default function ListaComprasPage() {
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleCopyList}
-                  disabled={!canCopyList}
-                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {copyFeedback ? (
-                    <ClipboardCheck size={17} aria-hidden="true" />
-                  ) : (
-                    <Clipboard size={17} aria-hidden="true" />
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  {purchasedItems.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPurchasedItems((currentValue) => !currentValue)}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+                    >
+                      {showPurchasedItems ? (
+                        <EyeOff size={17} aria-hidden="true" />
+                      ) : (
+                        <Eye size={17} aria-hidden="true" />
+                      )}
+                      <span>{showPurchasedItems ? 'Ocultar comprados' : 'Mostrar comprados'}</span>
+                    </button>
                   )}
-                  <span>{copyFeedback || 'Copiar lista'}</span>
-                </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyList}
+                    disabled={!canCopyList}
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {copyFeedback ? (
+                      <ClipboardCheck size={17} aria-hidden="true" />
+                    ) : (
+                      <Clipboard size={17} aria-hidden="true" />
+                    )}
+                    <span>{copyFeedback || 'Copiar lista'}</span>
+                  </button>
+                </div>
               </div>
 
               {!hasModeInput ? (
@@ -1397,7 +1815,7 @@ export default function ListaComprasPage() {
                     Clique em Gerar lista para consolidar compras e descontar estoque.
                   </p>
                 </div>
-              ) : visibleShoppingItems.length === 0 && shoppingList.inStock.length === 0 ? (
+              ) : allPurchaseItems.length === 0 && shoppingList.inStock.length === 0 ? (
                 <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-10 text-center">
                   <PackageSearch className="mx-auto mb-4 h-11 w-11 text-[#C9A84C]" aria-hidden="true" />
                   <p className="text-base font-semibold text-[#1A0A08]">
@@ -1409,6 +1827,73 @@ export default function ListaComprasPage() {
                 </div>
               ) : (
                 <>
+                  {allPurchaseItems.length > 0 && (
+                    <div className="mb-5 rounded-[16px] bg-[#1A0A08] p-4 text-white">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
+                            Total estimado
+                          </p>
+                          <p className="mt-1 text-2xl font-bold">
+                            {formatCurrency(totalEstimatedCost)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
+                            Total real
+                          </p>
+                          <p className="mt-1 text-2xl font-bold">
+                            {formatCurrency(hasRealCosts ? totalRealCost : totalEstimatedCost)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
+                            Diferenca
+                          </p>
+                          <p
+                            className={`mt-1 text-2xl font-bold ${
+                              totalDifference > 0 ? 'text-[#FFC7BC]' : 'text-[#BFE8CC]'
+                            }`}
+                          >
+                            {formatCurrency(hasRealCosts ? totalDifference : 0)}
+                          </p>
+                        </div>
+                      </div>
+
+                      {hasUnavailableCosts && (
+                        <p className="mt-3 text-sm text-[#E8D9D4]">
+                          Alguns itens nao tem custo por unidade cadastrado.
+                        </p>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleFinalizePurchase}
+                        disabled={!canFinalizePurchase}
+                        className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <ReceiptText size={18} aria-hidden="true" />
+                        <span>
+                          {isFinalizingPurchase ? 'Finalizando...' : 'Finalizar compra'}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+
+                  {purchasedItems.length > 0 && !showPurchasedItems && (
+                    <div className="mb-4 rounded-[16px] border border-[#BFE8CC] bg-[#F4FBF6] p-4">
+                      <div className="flex items-center gap-2">
+                        <PackageCheck size={18} className="text-[#1F7A3A]" aria-hidden="true" />
+                        <p className="font-bold text-[#1A0A08]">
+                          {purchasedItems.length} item
+                          {purchasedItems.length === 1 ? '' : 's'} comprado
+                          {purchasedItems.length === 1 ? '' : 's'} oculto
+                          {purchasedItems.length === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {visibleIngredientItems.length > 0 && (
                     <div>
                       <h3 className="mb-3 text-base font-bold text-[#1A0A08]">Ingredientes</h3>
@@ -1423,47 +1908,10 @@ export default function ListaComprasPage() {
                     </div>
                   )}
 
-                  {purchasedItems.length > 0 && (
-                    <div className="mt-6 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4">
-                      <div className="mb-3 flex items-center gap-2">
-                        <PackageCheck size={18} className="text-[#1F7A3A]" aria-hidden="true" />
-                        <h3 className="font-bold text-[#1A0A08]">Comprados</h3>
-                      </div>
-                      <div className="space-y-2">
-                        {purchasedItems.map((item) => (
-                          <p
-                            key={item.itemKey}
-                            className="text-sm text-[#999999] line-through"
-                          >
-                            {item.name}: {formatNumber(item.quantityToBuy)} {item.unit}
-                          </p>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {shoppingList.inStock.length > 0 && (
                     <div className="mt-6 rounded-[16px] border border-[#BFE8CC] bg-[#F4FBF6] p-4">
                       <h3 className="mb-3 font-bold text-[#1F7A3A]">Em estoque</h3>
                       {renderReadonlyItems(shoppingList.inStock)}
-                    </div>
-                  )}
-
-                  {visibleShoppingItems.length > 0 && (
-                    <div className="mt-4 rounded-[16px] bg-[#1A0A08] p-4 text-white">
-                      <p className="text-sm font-medium text-[#E8D9D4]">
-                        {hasUnavailableCosts
-                          ? 'Total estimado parcial'
-                          : 'Total estimado da compra'}
-                      </p>
-                      <p className="mt-1 text-3xl font-bold">
-                        {formatCurrency(totalEstimatedCost)}
-                      </p>
-                      {hasUnavailableCosts && (
-                        <p className="mt-2 text-sm text-[#E8D9D4]">
-                          Alguns itens nao tem custo por unidade cadastrado.
-                        </p>
-                      )}
                     </div>
                   )}
                 </>
