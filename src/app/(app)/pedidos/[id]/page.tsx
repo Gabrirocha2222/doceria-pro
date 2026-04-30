@@ -51,6 +51,19 @@ type OrderCakeTopper = {
   suppliers?: SupplierSummary | SupplierSummary[] | null
 }
 
+type RecurringOccurrenceStatus = 'pendente' | 'em_producao' | 'entregue' | 'cancelado'
+
+type RecurringOrderOccurrence = {
+  id: string
+  order_id: string
+  occurrence_number: number
+  scheduled_date: string | null
+  status: RecurringOccurrenceStatus
+  theme: string | null
+  notes: string | null
+  created_at: string
+}
+
 type Order = {
   id: string
   customer_name?: string | null
@@ -77,6 +90,10 @@ type Order = {
   extras_total?: NumericValue
   manual_total?: NumericValue
   remaining_payment_date?: string | null
+  is_recurring?: boolean | null
+  recurrence_type?: string | null
+  recurrence_count?: number | null
+  first_occurrence_date?: string | null
   customers?: {
     id: string
     name: string
@@ -84,6 +101,7 @@ type Order = {
   } | null
   order_items?: OrderItem[]
   order_cake_toppers?: OrderCakeTopper[]
+  recurring_order_occurrences?: RecurringOrderOccurrence[]
 }
 
 const statusOptions = [
@@ -93,6 +111,18 @@ const statusOptions = [
   { id: 'pronto', label: 'Pronto', color: '#27AE60' },
   { id: 'entregue', label: 'Entregue', color: '#7F8C8D' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B' },
+]
+
+const recurringStatusOptions: {
+  id: RecurringOccurrenceStatus
+  label: string
+  color: string
+  bg: string
+}[] = [
+  { id: 'pendente', label: 'Pendente', color: '#9A7320', bg: '#FFF6D8' },
+  { id: 'em_producao', label: 'Em producao', color: '#F39C12', bg: '#FFF2DD' },
+  { id: 'entregue', label: 'Entregue', color: '#17803D', bg: '#EAF8EF' },
+  { id: 'cancelado', label: 'Cancelado', color: '#C0392B', bg: '#FDECEA' },
 ]
 
 function parseNumericValue(value: NumericValue) {
@@ -125,6 +155,10 @@ function getStatusColor(status: string) {
 function getStatusLabel(status: string) {
   const option = statusOptions.find((statusOption) => statusOption.id === status)
   return option?.label || status
+}
+
+function getRecurringStatusMeta(status: RecurringOccurrenceStatus) {
+  return recurringStatusOptions.find((option) => option.id === status) ?? recurringStatusOptions[0]
 }
 
 function formatCurrency(value: NumericValue) {
@@ -222,6 +256,7 @@ export default function DetalhesPedidoPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [isUpdating, setIsUpdating] = useState(false)
+  const [updatingOccurrenceId, setUpdatingOccurrenceId] = useState('')
   const params = useParams()
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
@@ -277,6 +312,16 @@ export default function DetalhesPedidoPage() {
               id,
               name
             )
+          ),
+          recurring_order_occurrences (
+            id,
+            order_id,
+            occurrence_number,
+            scheduled_date,
+            status,
+            theme,
+            notes,
+            created_at
           )
         `)
         .eq('id', orderId)
@@ -311,6 +356,13 @@ export default function DetalhesPedidoPage() {
   }, [order])
 
   const cakeToppers = order?.order_cake_toppers ?? []
+
+  const recurringOccurrences = useMemo(() => {
+    return [...(order?.recurring_order_occurrences ?? [])].sort(
+      (firstOccurrence, secondOccurrence) =>
+        firstOccurrence.occurrence_number - secondOccurrence.occurrence_number
+    )
+  }, [order])
 
   const childItemsByParentId = useMemo(() => {
     const groupedItems = new Map<string, OrderItem[]>()
@@ -348,6 +400,49 @@ export default function DetalhesPedidoPage() {
       setError('Falha ao atualizar status')
     } finally {
       setIsUpdating(false)
+    }
+  }
+
+  async function updateOccurrenceStatus(
+    occurrenceId: string,
+    nextStatus: RecurringOccurrenceStatus
+  ) {
+    if (!order) return
+
+    setUpdatingOccurrenceId(occurrenceId)
+    setError('')
+
+    try {
+      const { error: updateError } = await supabase
+        .from('recurring_order_occurrences')
+        .update({ status: nextStatus })
+        .eq('id', occurrenceId)
+        .eq('order_id', order.id)
+
+      if (updateError) {
+        logSupabaseError('Erro Supabase recurring_order_occurrences status update:', updateError)
+        throw updateError
+      }
+
+      setOrder((currentOrder) =>
+        currentOrder
+          ? {
+              ...currentOrder,
+              recurring_order_occurrences: (
+                currentOrder.recurring_order_occurrences ?? []
+              ).map((occurrence) =>
+                occurrence.id === occurrenceId
+                  ? { ...occurrence, status: nextStatus }
+                  : occurrence
+              ),
+            }
+          : currentOrder
+      )
+    } catch (err) {
+      console.error('Erro ao atualizar ocorrencia recorrente:', err)
+      setError('Falha ao atualizar ocorrencia recorrente')
+    } finally {
+      setUpdatingOccurrenceId('')
     }
   }
 
@@ -409,6 +504,10 @@ export default function DetalhesPedidoPage() {
     order.remaining_value == null
       ? Math.max(totalValue - depositValue, 0)
       : parseNumericValue(order.remaining_value)
+  const deliveredRecurringCount = recurringOccurrences.filter(
+    (occurrence) => occurrence.status === 'entregue'
+  ).length
+  const recurrenceCount = order.recurrence_count ?? recurringOccurrences.length
 
   return (
     <div className="w-full pb-8">
@@ -587,6 +686,101 @@ export default function DetalhesPedidoPage() {
             </div>
           )}
         </section>
+
+        {order.is_recurring && (
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="font-bold text-[#1A0A08]">Mesversario / Recorrencia</h2>
+                <p className="mt-1 text-sm text-[#999999]">
+                  {deliveredRecurringCount}/{recurrenceCount || recurringOccurrences.length}{' '}
+                  entregues
+                </p>
+              </div>
+              <span className="w-fit rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-bold text-[#C0392B]">
+                {order.recurrence_type === 'mensal' || !order.recurrence_type
+                  ? 'Mensal'
+                  : order.recurrence_type}
+              </span>
+            </div>
+
+            {recurringOccurrences.length === 0 ? (
+              <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
+                Nenhuma ocorrencia recorrente foi gerada para este pedido.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {recurringOccurrences.map((occurrence) => {
+                  const status = getRecurringStatusMeta(occurrence.status)
+                  const isOccurrenceUpdating = updatingOccurrenceId === occurrence.id
+
+                  return (
+                    <article
+                      key={occurrence.id}
+                      className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <h3 className="font-bold text-[#1A0A08]">
+                                Mes {occurrence.occurrence_number}/{recurrenceCount}
+                              </h3>
+                              <p className="mt-1 text-sm text-[#999999]">
+                                {occurrence.scheduled_date
+                                  ? formatDate(occurrence.scheduled_date)
+                                  : 'Sem data'}
+                              </p>
+                            </div>
+
+                            <span
+                              className="w-fit rounded-full px-3 py-1 text-xs font-bold"
+                              style={{ backgroundColor: status.bg, color: status.color }}
+                            >
+                              {status.label}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+                            <div className="rounded-lg bg-white p-3">
+                              <p className="text-xs font-medium text-[#999999]">Tema</p>
+                              <p className="mt-1 font-semibold text-[#1A0A08]">
+                                {occurrence.theme || 'Nao informado'}
+                              </p>
+                            </div>
+
+                            <div className="rounded-lg bg-white p-3">
+                              <p className="text-xs font-medium text-[#999999]">
+                                Observacoes
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap break-words font-semibold text-[#1A0A08]">
+                                {occurrence.notes || 'Nao informado'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid shrink-0 grid-cols-2 gap-2 lg:w-52 lg:grid-cols-1">
+                          {recurringStatusOptions.map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => updateOccurrenceStatus(occurrence.id, option.id)}
+                              disabled={isOccurrenceUpdating || occurrence.status === option.id}
+                              className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0] disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
         {cakeToppers.length > 0 && (
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">

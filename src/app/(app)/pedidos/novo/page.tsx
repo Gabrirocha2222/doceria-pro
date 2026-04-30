@@ -45,6 +45,22 @@ type KitCategoryComponent = {
   notes: string | null
 }
 
+type KitFlexibleGroup = {
+  id: string
+  kit_recipe_id: string
+  name: string
+  total_quantity: NumericValue
+  notes: string | null
+}
+
+type KitFlexibleGroupCategory = {
+  id: string
+  flexible_group_id: string
+  category: string
+  default_quantity: NumericValue
+  sort_order: number | null
+}
+
 type FlavorItem = {
   localId: string
   name: string
@@ -94,7 +110,27 @@ type CakeTopperForm = {
   notes: string
 }
 
+type RecurringForm = {
+  enabled: boolean
+  recurrence_count: string
+  first_occurrence_date: string
+  recurrence_type: 'mensal'
+  theme: string
+  notes: string
+}
+
 type CakeTopperField = Exclude<keyof CakeTopperForm, 'enabled'>
+type RecurringField = Exclude<keyof RecurringForm, 'enabled'>
+
+type RecurringOrderOccurrenceInsert = {
+  user_id: string
+  order_id: string
+  occurrence_number: number
+  scheduled_date: string
+  status: 'pendente'
+  theme: string | null
+  notes: string | null
+}
 
 type KitSubItem = {
   localId: string
@@ -124,6 +160,24 @@ type KitCategorySubItem = {
   choices: KitCategoryChoice[]
 }
 
+type KitFlexibleGroupCategorySelection = {
+  localId: string
+  group_category_id: string
+  category: string
+  distributed_quantity: string
+  default_quantity: string
+  choices: KitCategoryChoice[]
+}
+
+type KitFlexibleGroupSelection = {
+  localId: string
+  group_id: string
+  name: string
+  total_quantity: string
+  notes: string
+  categories: KitFlexibleGroupCategorySelection[]
+}
+
 type OrderProductItem = {
   localId: string
   recipe_id: string
@@ -135,6 +189,7 @@ type OrderProductItem = {
   flavors: FlavorItem[]
   kit_subitems: KitSubItem[]
   kit_category_subitems: KitCategorySubItem[]
+  kit_flexible_groups: KitFlexibleGroupSelection[]
 }
 
 type OrderExtra = {
@@ -219,6 +274,15 @@ const initialCakeTopperForm: CakeTopperForm = {
   notes: '',
 }
 
+const initialRecurringForm: RecurringForm = {
+  enabled: false,
+  recurrence_count: '11',
+  first_occurrence_date: '',
+  recurrence_type: 'mensal',
+  theme: '',
+  notes: '',
+}
+
 function createLocalId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -242,6 +306,29 @@ function optionalText(value: string) {
 function optionalMoney(value: string) {
   const trimmedValue = value.trim()
   return trimmedValue ? parseDecimal(trimmedValue) : null
+}
+
+function parseInteger(value: string) {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) ? parsed : 0
+}
+
+function formatDatePart(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function addMonthsToDateString(dateValue: string, monthOffset: number) {
+  const [year, month, day] = dateValue.split('-').map(Number)
+
+  if (!year || !month || !day) return dateValue
+
+  const targetMonthIndex = month - 1 + monthOffset
+  const targetYear = year + Math.floor(targetMonthIndex / 12)
+  const normalizedMonthIndex = ((targetMonthIndex % 12) + 12) % 12
+  const lastDayOfTargetMonth = new Date(targetYear, normalizedMonthIndex + 1, 0).getDate()
+  const targetDay = Math.min(day, lastDayOfTargetMonth)
+
+  return `${targetYear}-${formatDatePart(normalizedMonthIndex + 1)}-${formatDatePart(targetDay)}`
 }
 
 function formatCurrency(value: NumericValue) {
@@ -311,14 +398,26 @@ function buildCategoryChoiceNotes(category: string, notes: string) {
   return trimmedNotes ? `Categoria: ${category}\n${trimmedNotes}` : `Categoria: ${category}`
 }
 
+function buildFlexibleCategoryChoiceNotes(groupName: string, category: string, notes: string) {
+  const trimmedNotes = notes.trim()
+  const baseNotes = `Categoria: ${category}\nGrupo flexivel: ${groupName}`
+
+  return trimmedNotes ? `${baseNotes}\n${trimmedNotes}` : baseNotes
+}
+
 export default function NovoPedidoPage() {
   const [form, setForm] = useState<OrderForm>(initialForm)
   const [cakeTopper, setCakeTopper] = useState<CakeTopperForm>(initialCakeTopperForm)
+  const [recurring, setRecurring] = useState<RecurringForm>(initialRecurringForm)
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [customers, setCustomers] = useState<CustomerOption[]>([])
   const [kitItems, setKitItems] = useState<ProductKitItem[]>([])
   const [kitCategoryComponents, setKitCategoryComponents] = useState<KitCategoryComponent[]>([])
+  const [kitFlexibleGroups, setKitFlexibleGroups] = useState<KitFlexibleGroup[]>([])
+  const [kitFlexibleGroupCategories, setKitFlexibleGroupCategories] = useState<
+    KitFlexibleGroupCategory[]
+  >([])
   const [orderItems, setOrderItems] = useState<OrderProductItem[]>([])
   const [orderExtras, setOrderExtras] = useState<OrderExtra[]>([])
   const [images, setImages] = useState<File[]>([])
@@ -379,6 +478,31 @@ export default function NovoPedidoPage() {
           throw kitCategoryComponentsError
         }
 
+        const { data: kitFlexibleGroupsData, error: kitFlexibleGroupsError } = await supabase
+          .from('kit_flexible_groups')
+          .select('id, kit_recipe_id, name, total_quantity, notes')
+          .eq('user_id', user.id)
+
+        if (kitFlexibleGroupsError) {
+          logSupabaseError('Erro Supabase kit_flexible_groups:', kitFlexibleGroupsError)
+          throw kitFlexibleGroupsError
+        }
+
+        const { data: kitFlexibleGroupCategoriesData, error: kitFlexibleGroupCategoriesError } =
+          await supabase
+            .from('kit_flexible_group_categories')
+            .select('id, flexible_group_id, category, default_quantity, sort_order')
+            .eq('user_id', user.id)
+            .order('sort_order', { ascending: true })
+
+        if (kitFlexibleGroupCategoriesError) {
+          logSupabaseError(
+            'Erro Supabase kit_flexible_group_categories:',
+            kitFlexibleGroupCategoriesError
+          )
+          throw kitFlexibleGroupCategoriesError
+        }
+
         const { data: suppliersData, error: suppliersError } = await supabase
           .from('suppliers')
           .select('id, name')
@@ -408,6 +532,10 @@ export default function NovoPedidoPage() {
           setKitItems((kitItemsData ?? []) as ProductKitItem[])
           setKitCategoryComponents(
             (kitCategoryComponentsData ?? []) as KitCategoryComponent[]
+          )
+          setKitFlexibleGroups((kitFlexibleGroupsData ?? []) as KitFlexibleGroup[])
+          setKitFlexibleGroupCategories(
+            (kitFlexibleGroupCategoriesData ?? []) as KitFlexibleGroupCategory[]
           )
         }
       } catch (err) {
@@ -455,6 +583,28 @@ export default function NovoPedidoPage() {
 
     return groupedItems
   }, [kitCategoryComponents])
+
+  const kitFlexibleGroupsByKitId = useMemo(() => {
+    const groupedItems = new Map<string, KitFlexibleGroup[]>()
+
+    kitFlexibleGroups.forEach((group) => {
+      const currentGroups = groupedItems.get(group.kit_recipe_id) ?? []
+      groupedItems.set(group.kit_recipe_id, [...currentGroups, group])
+    })
+
+    return groupedItems
+  }, [kitFlexibleGroups])
+
+  const kitFlexibleGroupCategoriesByGroupId = useMemo(() => {
+    const groupedItems = new Map<string, KitFlexibleGroupCategory[]>()
+
+    kitFlexibleGroupCategories.forEach((category) => {
+      const currentCategories = groupedItems.get(category.flexible_group_id) ?? []
+      groupedItems.set(category.flexible_group_id, [...currentCategories, category])
+    })
+
+    return groupedItems
+  }, [kitFlexibleGroupCategories])
 
   const recipesByCategory = useMemo(() => {
     const groupedRecipes = new Map<string, Recipe[]>()
@@ -531,6 +681,30 @@ export default function NovoPedidoPage() {
     }))
   }
 
+  function buildKitFlexibleGroups(recipeId: string) {
+    const selectedGroups = kitFlexibleGroupsByKitId.get(recipeId) ?? []
+
+    return selectedGroups.map((group) => {
+      const categories = kitFlexibleGroupCategoriesByGroupId.get(group.id) ?? []
+
+      return {
+        localId: createLocalId(),
+        group_id: group.id,
+        name: group.name,
+        total_quantity: String(parseNumericValue(group.total_quantity)),
+        notes: group.notes ?? '',
+        categories: categories.map((category) => ({
+          localId: createLocalId(),
+          group_category_id: category.id,
+          category: category.category,
+          distributed_quantity: String(parseNumericValue(category.default_quantity)),
+          default_quantity: String(parseNumericValue(category.default_quantity)),
+          choices: [],
+        })),
+      }
+    })
+  }
+
   function buildOrderItem(recipe: Recipe): OrderProductItem {
     const productType = recipe.product_type === 'kit' ? 'kit' : 'simples'
 
@@ -545,6 +719,7 @@ export default function NovoPedidoPage() {
       flavors: [],
       kit_subitems: productType === 'kit' ? buildKitSubItems(recipe.id) : [],
       kit_category_subitems: productType === 'kit' ? buildKitCategorySubItems(recipe.id) : [],
+      kit_flexible_groups: productType === 'kit' ? buildKitFlexibleGroups(recipe.id) : [],
     }
   }
 
@@ -554,6 +729,19 @@ export default function NovoPedidoPage() {
 
   function calculateCategoryChosenQuantity(component: KitCategorySubItem) {
     return component.choices.reduce((sum, choice) => sum + parseDecimal(choice.quantity), 0)
+  }
+
+  function calculateFlexibleGroupDistributedQuantity(group: KitFlexibleGroupSelection) {
+    return group.categories.reduce(
+      (sum, category) => sum + parseDecimal(category.distributed_quantity),
+      0
+    )
+  }
+
+  function calculateFlexibleCategoryChosenQuantity(
+    category: KitFlexibleGroupCategorySelection
+  ) {
+    return category.choices.reduce((sum, choice) => sum + parseDecimal(choice.quantity), 0)
   }
 
   function buildCategoryChoice(recipe: Recipe, quantity: string): KitCategoryChoice {
@@ -577,6 +765,14 @@ export default function NovoPedidoPage() {
       ...currentForm,
       [field]: value,
     }))
+
+    if (field === 'delivery_date') {
+      setRecurring((currentRecurring) =>
+        currentRecurring.enabled && !currentRecurring.first_occurrence_date
+          ? { ...currentRecurring, first_occurrence_date: value }
+          : currentRecurring
+      )
+    }
   }
 
   function handleCakeTopperChange(
@@ -588,6 +784,37 @@ export default function NovoPedidoPage() {
     setCakeTopper((currentCakeTopper) => ({
       ...currentCakeTopper,
       [field]: value,
+    }))
+  }
+
+  function handleRecurringChange(
+    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) {
+    const field = event.target.name as RecurringField
+    const value = event.target.value
+
+    if (field === 'recurrence_type') {
+      setRecurring((currentRecurring) => ({
+        ...currentRecurring,
+        recurrence_type: value as RecurringForm['recurrence_type'],
+      }))
+      return
+    }
+
+    setRecurring((currentRecurring) => ({
+      ...currentRecurring,
+      [field]: value,
+    }))
+  }
+
+  function toggleRecurring(enabled: boolean) {
+    setRecurring((currentRecurring) => ({
+      ...currentRecurring,
+      enabled,
+      first_occurrence_date:
+        enabled && !currentRecurring.first_occurrence_date
+          ? form.delivery_date
+          : currentRecurring.first_occurrence_date,
     }))
   }
 
@@ -963,6 +1190,310 @@ export default function NovoPedidoPage() {
     )
   }
 
+  function updateFlexibleGroupCategoryQuantity(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) =>
+            group.localId === groupLocalId
+              ? {
+                  ...group,
+                  categories: group.categories.map((category) =>
+                    category.localId === categoryLocalId
+                      ? {
+                          ...category,
+                          distributed_quantity: value,
+                        }
+                      : category
+                  ),
+                }
+              : group
+          ),
+        }
+      })
+    )
+  }
+
+  function addFlexibleCategoryChoice(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string
+  ) {
+    const item = orderItems.find((currentItem) => currentItem.localId === itemLocalId)
+    const group = item?.kit_flexible_groups.find(
+      (currentGroup) => currentGroup.localId === groupLocalId
+    )
+    const category = group?.categories.find(
+      (currentCategory) => currentCategory.localId === categoryLocalId
+    )
+
+    if (!category) return
+
+    const categoryProducts = getCategoryProducts(category.category)
+    const firstProduct = categoryProducts[0]
+
+    if (!firstProduct) {
+      setError(`Cadastre produtos na categoria ${category.category} antes de montar este kit`)
+      return
+    }
+
+    setOrderItems((currentItems) =>
+      currentItems.map((currentItem) => {
+        if (currentItem.localId !== itemLocalId) return currentItem
+
+        return {
+          ...currentItem,
+          kit_flexible_groups: currentItem.kit_flexible_groups.map((currentGroup) => {
+            if (currentGroup.localId !== groupLocalId) return currentGroup
+
+            return {
+              ...currentGroup,
+              categories: currentGroup.categories.map((currentCategory) => {
+                if (currentCategory.localId !== categoryLocalId) return currentCategory
+
+                const requiredQuantity = parseDecimal(currentCategory.distributed_quantity)
+                const chosenQuantity = calculateFlexibleCategoryChosenQuantity(currentCategory)
+                const remainingQuantity = Math.max(requiredQuantity - chosenQuantity, 0)
+                const nextQuantity = remainingQuantity > 0 ? String(remainingQuantity) : '1'
+
+                return {
+                  ...currentCategory,
+                  choices: [
+                    ...currentCategory.choices,
+                    buildCategoryChoice(firstProduct, nextQuantity),
+                  ],
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function updateFlexibleCategoryChoice(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    choiceLocalId: string,
+    field: 'recipe_id' | 'quantity' | 'notes',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) => {
+            if (group.localId !== groupLocalId) return group
+
+            return {
+              ...group,
+              categories: group.categories.map((category) => {
+                if (category.localId !== categoryLocalId) return category
+
+                return {
+                  ...category,
+                  choices: category.choices.map((choice) => {
+                    if (choice.localId !== choiceLocalId) return choice
+
+                    if (field === 'recipe_id') {
+                      const recipe = recipeById.get(value)
+
+                      return {
+                        ...choice,
+                        recipe_id: value,
+                        item_name: recipe?.name ?? choice.item_name,
+                      }
+                    }
+
+                    return {
+                      ...choice,
+                      [field]: value,
+                    }
+                  }),
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function removeFlexibleCategoryChoice(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    choiceLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) =>
+            group.localId === groupLocalId
+              ? {
+                  ...group,
+                  categories: group.categories.map((category) =>
+                    category.localId === categoryLocalId
+                      ? {
+                          ...category,
+                          choices: category.choices.filter(
+                            (choice) => choice.localId !== choiceLocalId
+                          ),
+                        }
+                      : category
+                  ),
+                }
+              : group
+          ),
+        }
+      })
+    )
+  }
+
+  function addFlexibleCategoryChoiceFlavor(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    choiceLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) => {
+            if (group.localId !== groupLocalId) return group
+
+            return {
+              ...group,
+              categories: group.categories.map((category) => {
+                if (category.localId !== categoryLocalId) return category
+
+                return {
+                  ...category,
+                  choices: category.choices.map((choice) =>
+                    choice.localId === choiceLocalId
+                      ? {
+                          ...choice,
+                          flavors: [
+                            ...choice.flavors,
+                            { localId: createLocalId(), name: '', quantity: '' },
+                          ],
+                        }
+                      : choice
+                  ),
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function updateFlexibleCategoryChoiceFlavor(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    choiceLocalId: string,
+    flavorLocalId: string,
+    field: 'name' | 'quantity',
+    value: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) => {
+            if (group.localId !== groupLocalId) return group
+
+            return {
+              ...group,
+              categories: group.categories.map((category) => {
+                if (category.localId !== categoryLocalId) return category
+
+                return {
+                  ...category,
+                  choices: category.choices.map((choice) =>
+                    choice.localId === choiceLocalId
+                      ? {
+                          ...choice,
+                          flavors: choice.flavors.map((flavor) =>
+                            flavor.localId === flavorLocalId
+                              ? { ...flavor, [field]: value }
+                              : flavor
+                          ),
+                        }
+                      : choice
+                  ),
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
+  function removeFlexibleCategoryChoiceFlavor(
+    itemLocalId: string,
+    groupLocalId: string,
+    categoryLocalId: string,
+    choiceLocalId: string,
+    flavorLocalId: string
+  ) {
+    setOrderItems((currentItems) =>
+      currentItems.map((item) => {
+        if (item.localId !== itemLocalId) return item
+
+        return {
+          ...item,
+          kit_flexible_groups: item.kit_flexible_groups.map((group) => {
+            if (group.localId !== groupLocalId) return group
+
+            return {
+              ...group,
+              categories: group.categories.map((category) => {
+                if (category.localId !== categoryLocalId) return category
+
+                return {
+                  ...category,
+                  choices: category.choices.map((choice) =>
+                    choice.localId === choiceLocalId
+                      ? {
+                          ...choice,
+                          flavors: choice.flavors.filter(
+                            (flavor) => flavor.localId !== flavorLocalId
+                          ),
+                        }
+                      : choice
+                  ),
+                }
+              }),
+            }
+          }),
+        }
+      })
+    )
+  }
+
   function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
     if (event.target.files) {
       setImages(Array.from(event.target.files))
@@ -1038,6 +1569,45 @@ export default function NovoPedidoPage() {
     return ''
   }
 
+  function validateKitFlexibleGroups(item: OrderProductItem) {
+    for (const group of item.kit_flexible_groups) {
+      const totalQuantity = parseDecimal(group.total_quantity)
+      const distributedQuantity = calculateFlexibleGroupDistributedQuantity(group)
+
+      if (Math.abs(distributedQuantity - totalQuantity) > 0.001) {
+        return `No kit ${item.item_name}, distribua exatamente ${formatNumber(
+          totalQuantity
+        )} itens no grupo ${group.name}. Distribuido: ${formatNumber(distributedQuantity)}.`
+      }
+
+      for (const category of group.categories) {
+        const requiredQuantity = parseDecimal(category.distributed_quantity)
+        const chosenQuantity = calculateFlexibleCategoryChosenQuantity(category)
+
+        if (Math.abs(chosenQuantity - requiredQuantity) > 0.001) {
+          return `No kit ${item.item_name}, escolha exatamente ${formatNumber(
+            requiredQuantity
+          )} itens de ${category.category} no grupo ${group.name}. Selecionado: ${formatNumber(
+            chosenQuantity
+          )}.`
+        }
+
+        const invalidChoice = category.choices.some(
+          (choice) =>
+            !choice.recipe_id ||
+            parseDecimal(choice.quantity) <= 0 ||
+            !validateFlavorList(choice.flavors)
+        )
+
+        if (invalidChoice) {
+          return `Confira produtos, quantidades e sabores de ${category.category} no grupo ${group.name}`
+        }
+      }
+    }
+
+    return ''
+  }
+
   function validateForm() {
     if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
     if (!form.delivery_time) return 'Horario de entrega e obrigatorio'
@@ -1057,8 +1627,15 @@ export default function NovoPedidoPage() {
       )
       if (hasInvalidFixedSubItem) return true
 
-      return item.kit_category_subitems.some((component) =>
+      const hasInvalidCategoryChoice = item.kit_category_subitems.some((component) =>
         component.choices.some((choice) => !validateFlavorList(choice.flavors))
+      )
+      if (hasInvalidCategoryChoice) return true
+
+      return item.kit_flexible_groups.some((group) =>
+        group.categories.some((category) =>
+          category.choices.some((choice) => !validateFlavorList(choice.flavors))
+        )
       )
     })
 
@@ -1072,6 +1649,12 @@ export default function NovoPedidoPage() {
 
     if (kitCategoryError) return kitCategoryError
 
+    const kitFlexibleGroupError = orderItems
+      .map((item) => validateKitFlexibleGroups(item))
+      .find((message) => message)
+
+    if (kitFlexibleGroupError) return kitFlexibleGroupError
+
     const invalidExtra = orderExtras.some(
       (extra) => !extra.name.trim() || parseDecimal(extra.amount) < 0
     )
@@ -1083,6 +1666,18 @@ export default function NovoPedidoPage() {
     if (cakeTopper.enabled) {
       if (parseDecimal(cakeTopper.cost) < 0 || parseDecimal(cakeTopper.charged_amount) < 0) {
         return 'Custo e valor cobrado do topo de bolo nao podem ser negativos'
+      }
+    }
+
+    if (recurring.enabled) {
+      const recurrenceCount = parseInteger(recurring.recurrence_count)
+
+      if (recurrenceCount <= 0) {
+        return 'Informe a quantidade de meses/ocorrencias do mesversario'
+      }
+
+      if (!recurring.first_occurrence_date) {
+        return 'Informe a data da primeira entrega recorrente'
       }
     }
 
@@ -1230,6 +1825,37 @@ export default function NovoPedidoPage() {
     }
   }
 
+  async function createRecurringOccurrencesForOrder(userId: string, orderId: string) {
+    if (!recurring.enabled) return
+
+    const recurrenceCount = parseInteger(recurring.recurrence_count)
+    const theme = optionalText(recurring.theme)
+    const notes = optionalText(recurring.notes)
+    const occurrences: RecurringOrderOccurrenceInsert[] = Array.from(
+      { length: recurrenceCount },
+      (_, index) => ({
+        user_id: userId,
+        order_id: orderId,
+        occurrence_number: index + 1,
+        scheduled_date: addMonthsToDateString(recurring.first_occurrence_date, index),
+        status: 'pendente',
+        theme,
+        notes,
+      })
+    )
+
+    const { error: occurrencesError } = await supabase
+      .from('recurring_order_occurrences')
+      .insert(occurrences)
+
+    if (occurrencesError) {
+      logSupabaseError('Erro Supabase recurring_order_occurrences insert:', occurrencesError)
+      throw new Error(
+        'Falha ao gerar ocorrencias recorrentes. Verifique se a migration create_recurring_orders foi aplicada no Supabase.'
+      )
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -1313,6 +1939,10 @@ export default function NovoPedidoPage() {
         payment_status: downPayment > 0 ? 'partial' : 'pending',
         delivery_address: optionalText(form.address),
         notes: optionalText(form.notes || form.description),
+        is_recurring: recurring.enabled,
+        recurrence_type: recurring.enabled ? recurring.recurrence_type : 'mensal',
+        recurrence_count: recurring.enabled ? parseInteger(recurring.recurrence_count) : null,
+        first_occurrence_date: recurring.enabled ? recurring.first_occurrence_date : null,
       }
 
       const { data: createdOrder, error: orderError } = await supabase
@@ -1479,6 +2109,66 @@ export default function NovoPedidoPage() {
             }
           }
         }
+
+        if (item.product_type === 'kit' && item.kit_flexible_groups.length > 0) {
+          for (const group of item.kit_flexible_groups) {
+            for (const category of group.categories) {
+              for (const choice of category.choices) {
+                const childQuantity = parseDecimal(choice.quantity) * quantity
+                const childFlavorPayload = buildFlavorPayload(choice.flavors)
+                const childNotes = buildFlexibleCategoryChoiceNotes(
+                  group.name,
+                  category.category,
+                  choice.notes
+                )
+
+                const { data: createdFlexibleChildItem, error: flexibleChildItemError } =
+                  await supabase
+                    .from('order_items')
+                    .insert([
+                      {
+                        user_id: currentUserId,
+                        order_id: orderId,
+                        recipe_id: choice.recipe_id,
+                        parent_order_item_id: createdItem.id,
+                        item_name: choice.item_name,
+                        quantity: childQuantity,
+                        unit_price: 0,
+                        subtotal: 0,
+                        flavor_details: childFlavorPayload,
+                        notes: childNotes,
+                      },
+                    ])
+                    .select('id')
+                    .single()
+
+                if (flexibleChildItemError) {
+                  logSupabaseError(
+                    'Erro Supabase order_items filho de grupo flexivel insert:',
+                    flexibleChildItemError
+                  )
+                  throw flexibleChildItemError
+                }
+
+                if (!createdFlexibleChildItem?.id) {
+                  throw new Error('Subitem de grupo flexivel criado sem id retornado pelo Supabase')
+                }
+
+                await createSupplierOrderForThirdPartyItem({
+                  userId: currentUserId,
+                  orderId,
+                  orderItemId: createdFlexibleChildItem.id,
+                  recipeId: choice.recipe_id,
+                  title: choice.item_name,
+                  quantity: childQuantity,
+                  flavorDetails: childFlavorPayload,
+                  notes: childNotes,
+                  parentKitName: item.item_name,
+                })
+              }
+            }
+          }
+        }
       }
 
       if (orderExtras.length > 0) {
@@ -1528,6 +2218,8 @@ export default function NovoPedidoPage() {
           logSupabaseError('Aviso Supabase payments insert:', paymentsError)
         }
       }
+
+      await createRecurringOccurrencesForOrder(currentUserId, orderId)
 
       if (images.length > 0) {
         const imagePaths = await uploadImages(orderId)
@@ -1701,6 +2393,94 @@ export default function NovoPedidoPage() {
                 />
               </div>
             </div>
+          </section>
+
+          <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
+            <label className="flex cursor-pointer items-center gap-3">
+              <input
+                type="checkbox"
+                checked={recurring.enabled}
+                onChange={(event) => toggleRecurring(event.target.checked)}
+                className="h-5 w-5 rounded border-[rgba(26,10,8,0.18)] text-[#C0392B] focus:ring-[#C0392B]"
+              />
+              <span className="font-bold text-[#1A0A08]">Pedido recorrente / Mesversario</span>
+            </label>
+
+            {recurring.enabled && (
+              <div className="mt-4 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Quantidade de meses/ocorrencias
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      name="recurrence_count"
+                      value={recurring.recurrence_count}
+                      onChange={handleRecurringChange}
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Data da primeira entrega
+                    </label>
+                    <input
+                      type="date"
+                      name="first_occurrence_date"
+                      value={recurring.first_occurrence_date}
+                      onChange={handleRecurringChange}
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Frequencia
+                    </label>
+                    <select
+                      name="recurrence_type"
+                      value={recurring.recurrence_type}
+                      onChange={handleRecurringChange}
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    >
+                      <option value="mensal">Mensal</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Tema geral
+                    </label>
+                    <input
+                      type="text"
+                      name="theme"
+                      value={recurring.theme}
+                      onChange={handleRecurringChange}
+                      placeholder="Ex: Safari, jardim, arco-iris..."
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
+                      Observacoes da recorrencia
+                    </label>
+                    <textarea
+                      name="notes"
+                      value={recurring.notes}
+                      onChange={handleRecurringChange}
+                      rows={3}
+                      placeholder="Detalhes combinados para todas as entregas mensais"
+                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
@@ -1907,9 +2687,10 @@ export default function NovoPedidoPage() {
 
                       {isKit && (
                         <div className="mt-4 space-y-3 rounded-lg bg-white p-3">
-                          <p className="text-sm font-bold text-[#1A0A08]">Composicao do kit</p>
+                          <p className="text-sm font-bold text-[#1A0A08]">Distribuicao do kit</p>
                           {item.kit_subitems.length === 0 &&
-                          item.kit_category_subitems.length === 0 ? (
+                          item.kit_category_subitems.length === 0 &&
+                          item.kit_flexible_groups.length === 0 ? (
                             <p className="text-sm text-[#999999]">
                               Este kit nao tem composicao cadastrada.
                             </p>
@@ -2221,6 +3002,323 @@ export default function NovoPedidoPage() {
                                             ))}
                                           </div>
                                         )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+
+                              {item.kit_flexible_groups.length > 0 && (
+                                <div className="space-y-3">
+                                  <p className="text-xs font-semibold text-[#999999]">
+                                    Grupos flexiveis
+                                  </p>
+                                  {item.kit_flexible_groups.map((group) => {
+                                    const totalQuantity = parseDecimal(group.total_quantity)
+                                    const distributedQuantity =
+                                      calculateFlexibleGroupDistributedQuantity(group)
+                                    const hasInvalidDistribution =
+                                      Math.abs(distributedQuantity - totalQuantity) > 0.001
+
+                                    return (
+                                      <div
+                                        key={group.localId}
+                                        className="rounded-lg border border-[rgba(26,10,8,0.07)] p-3"
+                                      >
+                                        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                          <div>
+                                            <p className="font-semibold text-[#1A0A08]">
+                                              {group.name}
+                                            </p>
+                                            <p
+                                              className={`text-xs font-semibold ${
+                                                hasInvalidDistribution
+                                                  ? 'text-[#C0392B]'
+                                                  : 'text-[#999999]'
+                                              }`}
+                                            >
+                                              Distribuido {formatNumber(distributedQuantity)} /{' '}
+                                              {formatNumber(totalQuantity)}
+                                            </p>
+                                            {group.notes && (
+                                              <p className="mt-1 text-xs text-[#999999]">
+                                                {group.notes}
+                                              </p>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        <div className="space-y-3">
+                                          {group.categories.map((category) => {
+                                            const categoryProducts = getCategoryProducts(
+                                              category.category
+                                            )
+                                            const distributedCategoryQuantity = parseDecimal(
+                                              category.distributed_quantity
+                                            )
+                                            const chosenCategoryQuantity =
+                                              calculateFlexibleCategoryChosenQuantity(category)
+                                            const hasInvalidCategoryTotal =
+                                              Math.abs(
+                                                chosenCategoryQuantity -
+                                                  distributedCategoryQuantity
+                                              ) > 0.001
+
+                                            return (
+                                              <div
+                                                key={category.localId}
+                                                className="rounded-lg bg-[#FAF6F0] p-3"
+                                              >
+                                                <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_130px_170px] md:items-end">
+                                                  <div>
+                                                    <p className="text-sm font-semibold text-[#1A0A08]">
+                                                      {category.category}
+                                                    </p>
+                                                    <p
+                                                      className={`mt-1 text-xs font-semibold ${
+                                                        hasInvalidCategoryTotal
+                                                          ? 'text-[#C0392B]'
+                                                          : 'text-[#999999]'
+                                                      }`}
+                                                    >
+                                                      Produtos {formatNumber(
+                                                        chosenCategoryQuantity
+                                                      )}{' '}
+                                                      /{' '}
+                                                      {formatNumber(distributedCategoryQuantity)}
+                                                    </p>
+                                                  </div>
+
+                                                  <div>
+                                                    <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                                      Quantidade
+                                                    </label>
+                                                    <input
+                                                      type="number"
+                                                      min="0"
+                                                      step="0.01"
+                                                      value={category.distributed_quantity}
+                                                      onChange={(event) =>
+                                                        updateFlexibleGroupCategoryQuantity(
+                                                          item.localId,
+                                                          group.localId,
+                                                          category.localId,
+                                                          event.target.value
+                                                        )
+                                                      }
+                                                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                    />
+                                                  </div>
+
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      addFlexibleCategoryChoice(
+                                                        item.localId,
+                                                        group.localId,
+                                                        category.localId
+                                                      )
+                                                    }
+                                                    className="inline-flex items-center justify-center gap-1 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-[#C0392B]"
+                                                  >
+                                                    <Plus size={15} aria-hidden="true" />
+                                                    <span>Adicionar produto</span>
+                                                  </button>
+                                                </div>
+
+                                                {categoryProducts.length === 0 && (
+                                                  <p className="mt-3 text-sm text-[#C0392B]">
+                                                    Nenhum produto cadastrado nesta categoria.
+                                                  </p>
+                                                )}
+
+                                                {category.choices.length === 0 ? (
+                                                  <p className="mt-3 text-sm text-[#999999]">
+                                                    Nenhum produto escolhido.
+                                                  </p>
+                                                ) : (
+                                                  <div className="mt-3 space-y-3">
+                                                    {category.choices.map((choice) => (
+                                                      <div
+                                                        key={choice.localId}
+                                                        className="rounded-lg bg-white p-3"
+                                                      >
+                                                        <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_110px_40px]">
+                                                          <select
+                                                            value={choice.recipe_id}
+                                                            onChange={(event) =>
+                                                              updateFlexibleCategoryChoice(
+                                                                item.localId,
+                                                                group.localId,
+                                                                category.localId,
+                                                                choice.localId,
+                                                                'recipe_id',
+                                                                event.target.value
+                                                              )
+                                                            }
+                                                            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                          >
+                                                            {categoryProducts.map((recipe) => (
+                                                              <option
+                                                                key={recipe.id}
+                                                                value={recipe.id}
+                                                              >
+                                                                {recipe.name}
+                                                              </option>
+                                                            ))}
+                                                          </select>
+                                                          <input
+                                                            type="number"
+                                                            min="0"
+                                                            step="0.01"
+                                                            value={choice.quantity}
+                                                            onChange={(event) =>
+                                                              updateFlexibleCategoryChoice(
+                                                                item.localId,
+                                                                group.localId,
+                                                                category.localId,
+                                                                choice.localId,
+                                                                'quantity',
+                                                                event.target.value
+                                                              )
+                                                            }
+                                                            placeholder="Qtd."
+                                                            className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                          />
+                                                          <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                              removeFlexibleCategoryChoice(
+                                                                item.localId,
+                                                                group.localId,
+                                                                category.localId,
+                                                                choice.localId
+                                                              )
+                                                            }
+                                                            className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                                            aria-label="Remover produto do grupo flexivel"
+                                                          >
+                                                            <Trash2
+                                                              size={16}
+                                                              aria-hidden="true"
+                                                            />
+                                                          </button>
+                                                        </div>
+
+                                                        <input
+                                                          type="text"
+                                                          value={choice.notes}
+                                                          onChange={(event) =>
+                                                            updateFlexibleCategoryChoice(
+                                                              item.localId,
+                                                              group.localId,
+                                                              category.localId,
+                                                              choice.localId,
+                                                              'notes',
+                                                              event.target.value
+                                                            )
+                                                          }
+                                                          placeholder="Observacoes deste produto"
+                                                          className="mt-2 w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                        />
+
+                                                        <div className="mt-3">
+                                                          <div className="mb-2 flex items-center justify-between gap-2">
+                                                            <p className="text-xs font-semibold text-[#1A0A08]">
+                                                              Sabores/variacoes
+                                                            </p>
+                                                            <button
+                                                              type="button"
+                                                              onClick={() =>
+                                                                addFlexibleCategoryChoiceFlavor(
+                                                                  item.localId,
+                                                                  group.localId,
+                                                                  category.localId,
+                                                                  choice.localId
+                                                                )
+                                                              }
+                                                              className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-2 py-1 text-xs font-semibold text-[#C0392B]"
+                                                            >
+                                                              <Plus size={13} aria-hidden="true" />
+                                                              <span>Adicionar sabor</span>
+                                                            </button>
+                                                          </div>
+
+                                                          {choice.flavors.length > 0 && (
+                                                            <div className="space-y-2">
+                                                              {choice.flavors.map((flavor) => (
+                                                                <div
+                                                                  key={flavor.localId}
+                                                                  className="grid grid-cols-[minmax(0,1fr)_110px_40px] gap-2"
+                                                                >
+                                                                  <input
+                                                                    type="text"
+                                                                    value={flavor.name}
+                                                                    onChange={(event) =>
+                                                                      updateFlexibleCategoryChoiceFlavor(
+                                                                        item.localId,
+                                                                        group.localId,
+                                                                        category.localId,
+                                                                        choice.localId,
+                                                                        flavor.localId,
+                                                                        'name',
+                                                                        event.target.value
+                                                                      )
+                                                                    }
+                                                                    placeholder="Sabor"
+                                                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                                  />
+                                                                  <input
+                                                                    type="number"
+                                                                    min="0"
+                                                                    step="0.01"
+                                                                    value={flavor.quantity}
+                                                                    onChange={(event) =>
+                                                                      updateFlexibleCategoryChoiceFlavor(
+                                                                        item.localId,
+                                                                        group.localId,
+                                                                        category.localId,
+                                                                        choice.localId,
+                                                                        flavor.localId,
+                                                                        'quantity',
+                                                                        event.target.value
+                                                                      )
+                                                                    }
+                                                                    placeholder="Qtd."
+                                                                    className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                                                  />
+                                                                  <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                      removeFlexibleCategoryChoiceFlavor(
+                                                                        item.localId,
+                                                                        group.localId,
+                                                                        category.localId,
+                                                                        choice.localId,
+                                                                        flavor.localId
+                                                                      )
+                                                                    }
+                                                                    className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                                                    aria-label="Remover sabor do grupo flexivel"
+                                                                  >
+                                                                    <Trash2
+                                                                      size={16}
+                                                                      aria-hidden="true"
+                                                                    />
+                                                                  </button>
+                                                                </div>
+                                                              ))}
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
                                       </div>
                                     )
                                   })}

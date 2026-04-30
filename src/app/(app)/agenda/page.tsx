@@ -18,6 +18,7 @@ import { createClient } from '@/lib/supabase/client'
 
 type ProductionStatus = 'pendente' | 'em_andamento' | 'concluido' | 'cancelado'
 type StatusFilter = 'todos' | ProductionStatus
+type RecurringOccurrenceStatus = 'pendente' | 'em_producao' | 'entregue' | 'cancelado'
 
 type ProductionScheduleItem = {
   id: string
@@ -53,6 +54,33 @@ type OrderOption = {
   order_items: {
     description: string | null
   }[] | null
+}
+
+type RecurringOrderSummary = {
+  id: string
+  delivery_time: string | null
+  customers: {
+    name: string | null
+  } | {
+    name: string | null
+  }[] | null
+  order_items: {
+    item_name: string | null
+    parent_order_item_id: string | null
+  }[] | null
+}
+
+type RecurringOrderOccurrence = {
+  id: string
+  user_id: string
+  order_id: string
+  occurrence_number: number
+  scheduled_date: string | null
+  status: RecurringOccurrenceStatus
+  theme: string | null
+  notes: string | null
+  created_at?: string
+  orders: RecurringOrderSummary | RecurringOrderSummary[] | null
 }
 
 type SupabaseErrorDetails = {
@@ -151,6 +179,23 @@ function getOrderTitle(order: OrderOption | undefined) {
   return `Pedido ${order.id.slice(0, 8)}`
 }
 
+function getRecurringOrder(order: RecurringOrderOccurrence['orders']) {
+  return Array.isArray(order) ? order[0] : order
+}
+
+function getRecurringOccurrenceTitle(occurrence: RecurringOrderOccurrence) {
+  const order = getRecurringOrder(occurrence.orders)
+  const mainItem = order?.order_items?.find((item) => !item.parent_order_item_id)
+  const customerName = getCustomerName(order?.customers ?? null)
+  const itemName = mainItem?.item_name?.trim() || 'Kit mesversario'
+
+  if (customerName) {
+    return `Mes ${occurrence.occurrence_number} - ${itemName} - ${customerName}`
+  }
+
+  return `Mes ${occurrence.occurrence_number} - ${itemName}`
+}
+
 function logSupabaseError(context: string, error: SupabaseErrorDetails) {
   console.error(context, {
     message: error.message,
@@ -176,6 +221,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 export default function AgendaPage() {
   const [scheduleItems, setScheduleItems] = useState<ProductionScheduleItem[]>([])
+  const [recurringOccurrences, setRecurringOccurrences] = useState<RecurringOrderOccurrence[]>([])
   const [recipes, setRecipes] = useState<RecipeOption[]>([])
   const [orders, setOrders] = useState<OrderOption[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -258,9 +304,44 @@ export default function AgendaPage() {
           throw ordersError
         }
 
+        const { data: recurringData, error: recurringError } = await supabase
+          .from('recurring_order_occurrences')
+          .select(
+            `
+              id,
+              user_id,
+              order_id,
+              occurrence_number,
+              scheduled_date,
+              status,
+              theme,
+              notes,
+              created_at,
+              orders (
+                id,
+                delivery_time,
+                customers (
+                  name
+                ),
+                order_items (
+                  item_name,
+                  parent_order_item_id
+                )
+              )
+            `
+          )
+          .eq('user_id', user.id)
+          .eq('status', 'pendente')
+          .order('scheduled_date', { ascending: true })
+
+        if (recurringError) {
+          logSupabaseError('Aviso Supabase recurring_order_occurrences select:', recurringError)
+        }
+
         if (isMounted) {
           setCurrentUserId(user.id)
           setScheduleItems((scheduleData ?? []) as ProductionScheduleItem[])
+          setRecurringOccurrences((recurringData ?? []) as RecurringOrderOccurrence[])
           setRecipes((recipesData ?? []) as RecipeOption[])
           setOrders((ordersData ?? []) as OrderOption[])
         }
@@ -316,6 +397,27 @@ export default function AgendaPage() {
       return matchesSearch && matchesStatus && matchesDate
     })
   }, [scheduleItems, searchQuery, selectedDate, statusFilter])
+
+  const filteredRecurringOccurrences = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+
+    return recurringOccurrences.filter((occurrence) => {
+      const title = getRecurringOccurrenceTitle(occurrence).toLowerCase()
+      const order = getRecurringOrder(occurrence.orders)
+      const customerName = getCustomerName(order?.customers ?? null).toLowerCase()
+      const searchableText = [title, customerName, occurrence.theme, occurrence.notes]
+        .filter((value): value is string => Boolean(value))
+        .join(' ')
+        .toLowerCase()
+      const matchesSearch = query ? searchableText.includes(query) : true
+      const matchesStatus = statusFilter === 'todos' || statusFilter === 'pendente'
+      const matchesDate = selectedDate ? occurrence.scheduled_date === selectedDate : true
+
+      return matchesSearch && matchesStatus && matchesDate
+    })
+  }, [recurringOccurrences, searchQuery, selectedDate, statusFilter])
+
+  const hasAgendaResults = filteredItems.length > 0 || filteredRecurringOccurrences.length > 0
 
   const summaryCards = [
     {
@@ -500,7 +602,7 @@ export default function AgendaPage() {
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
             <p className="mt-3 text-sm text-[#999999]">Carregando agenda...</p>
           </div>
-        ) : filteredItems.length === 0 ? (
+        ) : !hasAgendaResults ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
             <PackageCheck className="mx-auto mb-4 h-12 w-12 text-[#C9A84C]" aria-hidden="true" />
             <p className="text-lg font-semibold text-[#1A0A08]">
@@ -619,6 +721,79 @@ export default function AgendaPage() {
                 </article>
               )
             })}
+
+            {filteredRecurringOccurrences.length > 0 && (
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-bold text-[#1A0A08]">
+                    Mesversario / recorrencia
+                  </h2>
+                  <span className="rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-bold text-[#C0392B]">
+                    {filteredRecurringOccurrences.length} pendente
+                    {filteredRecurringOccurrences.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {filteredRecurringOccurrences.map((occurrence) => {
+                  const order = getRecurringOrder(occurrence.orders)
+                  const title = getRecurringOccurrenceTitle(occurrence)
+
+                  return (
+                    <Link
+                      key={occurrence.id}
+                      href={`/pedidos/${occurrence.order_id}`}
+                      className="block rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <h3 className="break-words text-lg font-bold text-[#1A0A08]">
+                                {title}
+                              </h3>
+                              <p className="mt-1 text-sm font-medium text-[#999999]">
+                                {occurrence.scheduled_date
+                                  ? formatDate(occurrence.scheduled_date)
+                                  : 'Sem data'}{' '}
+                                - {formatTimeRange(order?.delivery_time ?? null, null)}
+                              </p>
+                            </div>
+
+                            <span className="w-fit rounded-full bg-[#FFF6D8] px-3 py-1 text-xs font-bold text-[#9A7320]">
+                              Pendente
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+                            <div className="rounded-lg bg-[#FAF6F0] p-3">
+                              <p className="text-xs font-medium text-[#999999]">Tema</p>
+                              <p className="mt-1 font-bold text-[#1A0A08]">
+                                {occurrence.theme || 'Nao informado'}
+                              </p>
+                            </div>
+
+                            {occurrence.notes && (
+                              <div className="rounded-lg bg-[#FAF6F0] p-3">
+                                <p className="text-xs font-medium text-[#999999]">
+                                  Observacoes
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap break-words text-[#1A0A08]">
+                                  {occurrence.notes}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <span className="w-fit rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-bold text-[#C0392B]">
+                          Mes {occurrence.occurrence_number}
+                        </span>
+                      </div>
+                    </Link>
+                  )
+                })}
+              </section>
+            )}
           </div>
         )}
       </main>

@@ -24,6 +24,12 @@ type OrderItem = {
   notes: string | null
 }
 
+type RecurringOccurrence = {
+  id: string
+  occurrence_number: number
+  status: 'pendente' | 'em_producao' | 'entregue' | 'cancelado'
+}
+
 type Order = {
   id: string
   product_name: string | null
@@ -37,12 +43,15 @@ type Order = {
   created_at: string
   notes?: string | null
   fulfillment_type?: string | null
+  is_recurring?: boolean | null
+  recurrence_count?: number | null
   customers?: {
     id: string
     name: string
     phone: string | null
   } | null
   order_items?: OrderItem[]
+  recurring_order_occurrences?: RecurringOccurrence[]
 }
 
 const statusOptions = [
@@ -120,6 +129,14 @@ function getOrderSummary(order: Order) {
     .join(' + ')
 }
 
+function getRecurringProgress(order: Order) {
+  const occurrences = order.recurring_order_occurrences ?? []
+  const delivered = occurrences.filter((occurrence) => occurrence.status === 'entregue').length
+  const total = order.recurrence_count ?? occurrences.length
+
+  return { delivered, total }
+}
+
 export default function PedidosPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedStatus, setSelectedStatus] = useState('todos')
@@ -159,6 +176,11 @@ export default function PedidosPage() {
             unit_price,
             subtotal,
             notes
+          ),
+          recurring_order_occurrences (
+            id,
+            occurrence_number,
+            status
           )
         `)
         .eq('user_id', user.id)
@@ -314,6 +336,7 @@ export default function PedidosPage() {
             {filteredOrders.map((order) => {
               const mainItems = getMainItems(order)
               const hasStructuredItems = mainItems.length > 0
+              const recurringProgress = getRecurringProgress(order)
 
               return (
                 <Link
@@ -353,6 +376,11 @@ export default function PedidosPage() {
                             </span>
                           </div>
                         )}
+                        {order.is_recurring && (
+                          <p className="mt-2 text-xs font-semibold text-[#C0392B]">
+                            {recurringProgress.delivered}/{recurringProgress.total} entregues
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -383,6 +411,12 @@ export default function PedidosPage() {
                       {order.fulfillment_type === 'entrega' && (
                         <div className="rounded-full bg-[#C9A84C] px-2 py-1 text-xs font-semibold text-white">
                           Entrega
+                        </div>
+                      )}
+
+                      {order.is_recurring && (
+                        <div className="rounded-full bg-[#FAF6F0] px-2 py-1 text-xs font-semibold text-[#C0392B]">
+                          Mesversario
                         </div>
                       )}
 

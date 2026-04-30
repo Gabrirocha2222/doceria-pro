@@ -58,6 +58,10 @@ type KitCategoryComponentLink = {
   kit_recipe_id: string
 }
 
+type KitFlexibleGroupLink = {
+  kit_recipe_id: string
+}
+
 type Supplier = {
   id: string
   name: string
@@ -121,6 +125,9 @@ export default function ReceitasPage() {
   const [kitCategoryCountByRecipeId, setKitCategoryCountByRecipeId] = useState<
     Record<string, number>
   >({})
+  const [kitFlexibleGroupCountByRecipeId, setKitFlexibleGroupCountByRecipeId] = useState<
+    Record<string, number>
+  >({})
   const [supplierNameById, setSupplierNameById] = useState<Record<string, string>>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -157,6 +164,7 @@ export default function ReceitasPage() {
         const packagingCounts = new Map<string, number>()
         const kitItemCounts = new Map<string, number>()
         const kitCategoryCounts = new Map<string, number>()
+        const kitFlexibleGroupCounts = new Map<string, number>()
         const supplierIds = Array.from(
           new Set(
             recipeRows
@@ -220,6 +228,25 @@ export default function ReceitasPage() {
               )
             })
           }
+
+          const { data: flexibleGroupLinks, error: flexibleGroupError } = await supabase
+            .from('kit_flexible_groups')
+            .select('kit_recipe_id')
+            .eq('user_id', user.id)
+            .in('kit_recipe_id', recipeIds)
+
+          if (flexibleGroupError) {
+            logSupabaseError('Erro Supabase kit_flexible_groups:', flexibleGroupError)
+          } else {
+            const links = (flexibleGroupLinks ?? []) as KitFlexibleGroupLink[]
+
+            links.forEach((link) => {
+              kitFlexibleGroupCounts.set(
+                link.kit_recipe_id,
+                (kitFlexibleGroupCounts.get(link.kit_recipe_id) ?? 0) + 1
+              )
+            })
+          }
         }
 
         if (supplierIds.length > 0) {
@@ -245,6 +272,7 @@ export default function ReceitasPage() {
           setPackagingCountByRecipeId(Object.fromEntries(packagingCounts))
           setKitItemCountByRecipeId(Object.fromEntries(kitItemCounts))
           setKitCategoryCountByRecipeId(Object.fromEntries(kitCategoryCounts))
+          setKitFlexibleGroupCountByRecipeId(Object.fromEntries(kitFlexibleGroupCounts))
           setSupplierNameById(Object.fromEntries(supplierNames))
         }
       } catch (err) {
@@ -362,7 +390,8 @@ export default function ReceitasPage() {
               const isThirdParty = recipe.is_third_party === true
               const kitItemCount = kitItemCountByRecipeId[recipe.id] ?? 0
               const kitCategoryCount = kitCategoryCountByRecipeId[recipe.id] ?? 0
-              const kitComponentCount = kitItemCount + kitCategoryCount
+              const kitFlexibleGroupCount = kitFlexibleGroupCountByRecipeId[recipe.id] ?? 0
+              const kitComponentCount = kitItemCount + kitCategoryCount + kitFlexibleGroupCount
               const supplierName = recipe.supplier_id
                 ? supplierNameById[recipe.supplier_id]
                 : undefined
@@ -454,6 +483,13 @@ export default function ReceitasPage() {
                             {kitCategoryCount === 1
                               ? '1 categoria'
                               : `${kitCategoryCount} categorias`}
+                          </p>
+                        )}
+                        {kitFlexibleGroupCount > 0 && (
+                          <p>
+                            {kitFlexibleGroupCount === 1
+                              ? '1 grupo flexivel'
+                              : `${kitFlexibleGroupCount} grupos flexiveis`}
                           </p>
                         )}
                         {kitComponentCount === 0 && <p>Composicao ainda nao cadastrada.</p>}

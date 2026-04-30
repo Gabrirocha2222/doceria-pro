@@ -107,6 +107,20 @@ type KitCategoryComponentItem = {
   notes: string
 }
 
+type KitFlexibleGroupCategoryItem = {
+  localId: string
+  category: string
+  default_quantity: string
+}
+
+type KitFlexibleGroupItem = {
+  localId: string
+  name: string
+  total_quantity: string
+  notes: string
+  categories: KitFlexibleGroupCategoryItem[]
+}
+
 const categoryOptions = [
   'Bolos',
   'Tortas',
@@ -337,6 +351,7 @@ export default function NovaReceitaPage() {
   const [kitCategoryComponents, setKitCategoryComponents] = useState<KitCategoryComponentItem[]>(
     []
   )
+  const [kitFlexibleGroups, setKitFlexibleGroups] = useState<KitFlexibleGroupItem[]>([])
   const [isLoadingIngredients, setIsLoadingIngredients] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -730,6 +745,124 @@ export default function NovaReceitaPage() {
     )
   }
 
+  function buildDefaultFlexibleGroupCategories(): KitFlexibleGroupCategoryItem[] {
+    return [
+      {
+        localId: createLocalId(),
+        category: 'Doces tradicionais',
+        default_quantity: '50',
+      },
+      {
+        localId: createLocalId(),
+        category: 'Salgados tradicionais',
+        default_quantity: '50',
+      },
+    ]
+  }
+
+  function addKitFlexibleGroup() {
+    setKitFlexibleGroups((currentGroups) => [
+      ...currentGroups,
+      {
+        localId: createLocalId(),
+        name: 'Doces e salgados',
+        total_quantity: '100',
+        notes: '',
+        categories: buildDefaultFlexibleGroupCategories(),
+      },
+    ])
+  }
+
+  function updateKitFlexibleGroup(
+    localId: string,
+    field: 'name' | 'total_quantity' | 'notes',
+    value: string
+  ) {
+    setKitFlexibleGroups((currentGroups) =>
+      currentGroups.map((group) =>
+        group.localId === localId
+          ? {
+              ...group,
+              [field]: value,
+            }
+          : group
+      )
+    )
+  }
+
+  function removeKitFlexibleGroup(localId: string) {
+    setKitFlexibleGroups((currentGroups) =>
+      currentGroups.filter((group) => group.localId !== localId)
+    )
+  }
+
+  function addKitFlexibleGroupCategory(groupLocalId: string) {
+    setKitFlexibleGroups((currentGroups) =>
+      currentGroups.map((group) =>
+        group.localId === groupLocalId
+          ? {
+              ...group,
+              categories: [
+                ...group.categories,
+                {
+                  localId: createLocalId(),
+                  category: kitCategoryOptions[0],
+                  default_quantity: '0',
+                },
+              ],
+            }
+          : group
+      )
+    )
+  }
+
+  function updateKitFlexibleGroupCategory(
+    groupLocalId: string,
+    categoryLocalId: string,
+    field: 'category' | 'default_quantity',
+    value: string
+  ) {
+    setKitFlexibleGroups((currentGroups) =>
+      currentGroups.map((group) =>
+        group.localId === groupLocalId
+          ? {
+              ...group,
+              categories: group.categories.map((categoryItem) =>
+                categoryItem.localId === categoryLocalId
+                  ? {
+                      ...categoryItem,
+                      [field]: value,
+                    }
+                  : categoryItem
+              ),
+            }
+          : group
+      )
+    )
+  }
+
+  function removeKitFlexibleGroupCategory(groupLocalId: string, categoryLocalId: string) {
+    setKitFlexibleGroups((currentGroups) =>
+      currentGroups.map((group) =>
+        group.localId === groupLocalId
+          ? {
+              ...group,
+              categories: group.categories.filter(
+                (categoryItem) => categoryItem.localId !== categoryLocalId
+              ),
+            }
+          : group
+      )
+    )
+  }
+
+  function calculateFlexibleGroupDefaultTotal(group: KitFlexibleGroupItem) {
+    return group.categories.reduce(
+      (sum, categoryItem) => sum + parseDecimal(categoryItem.default_quantity),
+      0
+    )
+  }
+
   function validateForm() {
     if (!form.name.trim()) return 'Nome da receita é obrigatório'
     if (yieldAmount <= 0) return 'Rendimento deve ser maior que zero'
@@ -741,8 +874,12 @@ export default function NovaReceitaPage() {
       return 'Preço que eu cobro deve ser um valor válido'
     }
     if (isKit) {
-      if (recipeKitItems.length === 0 && kitCategoryComponents.length === 0) {
-        return 'Adicione pelo menos um produto fixo ou uma categoria ao kit'
+      if (
+        recipeKitItems.length === 0 &&
+        kitCategoryComponents.length === 0 &&
+        kitFlexibleGroups.length === 0
+      ) {
+        return 'Adicione pelo menos um produto fixo, uma categoria ou um grupo flexivel ao kit'
       }
 
       const invalidKitItem = recipeKitItems.some(
@@ -759,6 +896,26 @@ export default function NovaReceitaPage() {
 
       if (invalidCategoryComponent) {
         return 'Confira categoria e quantidade de todos os componentes por categoria'
+      }
+
+      const invalidFlexibleGroup = kitFlexibleGroups.some((group) => {
+        const totalQuantity = parseDecimal(group.total_quantity)
+        const defaultTotal = calculateFlexibleGroupDefaultTotal(group)
+
+        return (
+          !group.name.trim() ||
+          totalQuantity <= 0 ||
+          group.categories.length < 2 ||
+          Math.abs(defaultTotal - totalQuantity) > 0.001 ||
+          group.categories.some(
+            (categoryItem) =>
+              !categoryItem.category.trim() || parseDecimal(categoryItem.default_quantity) < 0
+          )
+        )
+      })
+
+      if (invalidFlexibleGroup) {
+        return 'Confira nome, total, categorias e distribuicao padrao dos grupos flexiveis'
       }
 
       return ''
@@ -893,6 +1050,51 @@ export default function NovaReceitaPage() {
           if (categoryComponentsError) {
             logSupabaseError('Erro Supabase kit_category_components:', categoryComponentsError)
             throw categoryComponentsError
+          }
+        }
+
+        for (const group of kitFlexibleGroups) {
+          const { data: createdGroup, error: flexibleGroupError } = await supabase
+            .from('kit_flexible_groups')
+            .insert([
+              {
+                user_id: user.id,
+                kit_recipe_id: createdRecipe.id,
+                name: group.name.trim(),
+                total_quantity: parseDecimal(group.total_quantity),
+                notes: optionalText(group.notes),
+              },
+            ])
+            .select('id')
+            .single()
+
+          if (flexibleGroupError) {
+            logSupabaseError('Erro Supabase kit_flexible_groups:', flexibleGroupError)
+            throw flexibleGroupError
+          }
+
+          if (!createdGroup?.id) {
+            throw new Error('Grupo flexivel criado sem id retornado pelo Supabase')
+          }
+
+          const groupCategoriesPayload = group.categories.map((categoryItem, index) => ({
+            user_id: user.id,
+            flexible_group_id: createdGroup.id,
+            category: categoryItem.category.trim(),
+            default_quantity: parseDecimal(categoryItem.default_quantity),
+            sort_order: index,
+          }))
+
+          const { error: groupCategoriesError } = await supabase
+            .from('kit_flexible_group_categories')
+            .insert(groupCategoriesPayload)
+
+          if (groupCategoriesError) {
+            logSupabaseError(
+              'Erro Supabase kit_flexible_group_categories:',
+              groupCategoriesError
+            )
+            throw groupCategoriesError
           }
         }
       } else if (isSimpleInternal) {
@@ -1499,6 +1701,209 @@ export default function NovaReceitaPage() {
                     </div>
                   )}
                 </div>
+
+                <div className="border-t border-[rgba(26,10,8,0.07)] pt-5">
+                  <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-bold text-[#1A0A08]">Grupos flexiveis</h3>
+                      <p className="mt-1 text-sm text-[#999999]">
+                        Categorias que compartilham uma quantidade total e podem ser redistribuidas
+                        no pedido.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={addKitFlexibleGroup}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
+                    >
+                      <Plus size={18} aria-hidden="true" />
+                      <span>Adicionar grupo</span>
+                    </button>
+                  </div>
+
+                  {kitFlexibleGroups.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-6 text-center text-sm text-[#999999]">
+                      Nenhum grupo flexivel adicionado.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {kitFlexibleGroups.map((group, groupIndex) => {
+                        const defaultTotal = calculateFlexibleGroupDefaultTotal(group)
+                        const totalQuantity = parseDecimal(group.total_quantity)
+                        const hasInvalidTotal = Math.abs(defaultTotal - totalQuantity) > 0.001
+
+                        return (
+                          <div
+                            key={group.localId}
+                            className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] p-4"
+                          >
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <p className="text-sm font-bold text-[#1A0A08]">
+                                Grupo flexivel {groupIndex + 1}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => removeKitFlexibleGroup(group.localId)}
+                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#999999] transition-colors hover:bg-red-50 hover:text-[#C0392B]"
+                                aria-label="Remover grupo flexivel do kit"
+                              >
+                                <Trash2 size={17} aria-hidden="true" />
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_130px] md:items-end">
+                              <div>
+                                <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                  Nome do grupo
+                                </label>
+                                <input
+                                  type="text"
+                                  value={group.name}
+                                  onChange={(event) =>
+                                    updateKitFlexibleGroup(
+                                      group.localId,
+                                      'name',
+                                      event.target.value
+                                    )
+                                  }
+                                  placeholder="Ex: Doces e salgados"
+                                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                  Total
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  inputMode="decimal"
+                                  value={group.total_quantity}
+                                  onChange={(event) =>
+                                    updateKitFlexibleGroup(
+                                      group.localId,
+                                      'total_quantity',
+                                      event.target.value
+                                    )
+                                  }
+                                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="mt-3 rounded-lg bg-white p-3">
+                              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="text-xs font-semibold text-[#1A0A08]">
+                                    Categorias permitidas
+                                  </p>
+                                  <p
+                                    className={`mt-1 text-xs font-semibold ${
+                                      hasInvalidTotal ? 'text-[#C0392B]' : 'text-[#999999]'
+                                    }`}
+                                  >
+                                    Distribuicao padrao: {formatNumber(defaultTotal)} /{' '}
+                                    {formatNumber(totalQuantity)}
+                                  </p>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => addKitFlexibleGroupCategory(group.localId)}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-[#FAF6F0] px-3 py-2 text-sm font-semibold text-[#C0392B]"
+                                >
+                                  <Plus size={15} aria-hidden="true" />
+                                  <span>Adicionar categoria</span>
+                                </button>
+                              </div>
+
+                              <div className="space-y-2">
+                                {group.categories.map((categoryItem) => (
+                                  <div
+                                    key={categoryItem.localId}
+                                    className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_130px_40px]"
+                                  >
+                                    <select
+                                      value={categoryItem.category}
+                                      onChange={(event) =>
+                                        updateKitFlexibleGroupCategory(
+                                          group.localId,
+                                          categoryItem.localId,
+                                          'category',
+                                          event.target.value
+                                        )
+                                      }
+                                      className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                    >
+                                      {kitCategoryOptions.map((category) => (
+                                        <option key={category} value={category}>
+                                          {category}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      inputMode="decimal"
+                                      value={categoryItem.default_quantity}
+                                      onChange={(event) =>
+                                        updateKitFlexibleGroupCategory(
+                                          group.localId,
+                                          categoryItem.localId,
+                                          'default_quantity',
+                                          event.target.value
+                                        )
+                                      }
+                                      className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                                    />
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        removeKitFlexibleGroupCategory(
+                                          group.localId,
+                                          categoryItem.localId
+                                        )
+                                      }
+                                      className="inline-flex items-center justify-center rounded-lg text-[#999999] hover:bg-red-50 hover:text-[#C0392B]"
+                                      aria-label="Remover categoria do grupo flexivel"
+                                    >
+                                      <Trash2 size={16} aria-hidden="true" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="mt-3">
+                              <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
+                                Observacoes
+                              </label>
+                              <input
+                                type="text"
+                                value={group.notes}
+                                onChange={(event) =>
+                                  updateKitFlexibleGroup(
+                                    group.localId,
+                                    'notes',
+                                    event.target.value
+                                  )
+                                }
+                                placeholder="Ex: cliente pode trocar doces por salgados"
+                                className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
           )}
@@ -1829,9 +2234,9 @@ export default function NovaReceitaPage() {
                   <p className="mt-1 text-2xl font-bold text-[#1A0A08]">
                     {formatCurrency(kitTotalCost)}
                   </p>
-                  {kitCategoryComponents.length > 0 && (
+                  {(kitCategoryComponents.length > 0 || kitFlexibleGroups.length > 0) && (
                     <p className="mt-1 text-xs text-[#999999]">
-                      Categorias entram como custo 0 ate a escolha no pedido.
+                      Categorias e grupos flexiveis entram como custo 0 ate a escolha no pedido.
                     </p>
                   )}
                 </div>
