@@ -5,17 +5,20 @@ import Link from 'next/link'
 import {
   AlertTriangle,
   BookOpen,
+  CheckCircle2,
   CircleDollarSign,
   Package,
   Percent,
+  Pencil,
   Plus,
   Search,
+  Trash2,
   Utensils,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 type NumericValue = number | string | null | undefined
-type ProductType = 'simples' | 'kit'
+type ProductType = 'simple' | 'recipe' | 'kit' | 'outsourced' | 'simples'
 
 type SupabaseErrorLike = {
   message?: string
@@ -67,6 +70,9 @@ type Supplier = {
   name: string
 }
 
+const DELETE_BLOCKED_MESSAGE =
+  'Não foi possível apagar porque esta receita/produto já está vinculada a outros registros.'
+
 function parseNumericValue(value: NumericValue) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : 0
@@ -90,6 +96,19 @@ function logSupabaseError(context: string, error: unknown) {
     hint: supabaseError.hint,
     code: supabaseError.code,
   })
+}
+
+function isForeignKeyError(error: unknown) {
+  const supabaseError =
+    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+  const message = supabaseError.message?.toLowerCase() ?? ''
+  const details = supabaseError.details?.toLowerCase() ?? ''
+
+  return (
+    supabaseError.code === '23503' ||
+    message.includes('foreign key') ||
+    details.includes('foreign key')
+  )
 }
 
 function formatCurrency(value: NumericValue) {
@@ -130,6 +149,8 @@ export default function ReceitasPage() {
   >({})
   const [supplierNameById, setSupplierNameById] = useState<Record<string, string>>({})
   const [searchQuery, setSearchQuery] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const [deletingRecipeId, setDeletingRecipeId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const supabase = useMemo(() => createClient(), [])
@@ -294,6 +315,195 @@ export default function ReceitasPage() {
     }
   }, [supabase])
 
+  function removeRecipeFromCounts(recipeId: string) {
+    setPackagingCountByRecipeId((currentCounts) => {
+      const nextCounts = { ...currentCounts }
+      delete nextCounts[recipeId]
+      return nextCounts
+    })
+    setKitItemCountByRecipeId((currentCounts) => {
+      const nextCounts = { ...currentCounts }
+      delete nextCounts[recipeId]
+      return nextCounts
+    })
+    setKitCategoryCountByRecipeId((currentCounts) => {
+      const nextCounts = { ...currentCounts }
+      delete nextCounts[recipeId]
+      return nextCounts
+    })
+    setKitFlexibleGroupCountByRecipeId((currentCounts) => {
+      const nextCounts = { ...currentCounts }
+      delete nextCounts[recipeId]
+      return nextCounts
+    })
+  }
+
+  async function hasLinkedRecords(
+    table: 'product_kit_items' | 'order_items' | 'production_schedule',
+    column: 'item_recipe_id' | 'recipe_id',
+    recipeId: string,
+    userId: string
+  ) {
+    const { data, error: linkedRecordsError } = await supabase
+      .from(table)
+      .select('id')
+      .eq('user_id', userId)
+      .eq(column, recipeId)
+      .limit(1)
+
+    if (linkedRecordsError) {
+      logSupabaseError(`Erro Supabase ${table} linked select:`, linkedRecordsError)
+      throw linkedRecordsError
+    }
+
+    return (data ?? []).length > 0
+  }
+
+  async function handleDeleteRecipe(recipe: Recipe) {
+    const confirmed = window.confirm(
+      'Tem certeza que deseja apagar esta receita/produto? Esta ação não pode ser desfeita.'
+    )
+
+    if (!confirmed) return
+
+    setError('')
+    setSuccessMessage('')
+    setDeletingRecipeId(recipe.id)
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        throw new Error('UsuÃ¡rio nÃ£o autenticado')
+      }
+
+      const { data: ownedRecipe, error: ownershipError } = await supabase
+        .from('recipes')
+        .select('id')
+        .eq('id', recipe.id)
+        .eq('user_id', user.id)
+        .maybeSingle()
+
+      if (ownershipError) {
+        logSupabaseError('Erro Supabase recipes ownership select:', ownershipError)
+        throw ownershipError
+      }
+
+      if (!ownedRecipe?.id) {
+        throw new Error('Receita/produto nao encontrada ou sem permissao para apagar')
+      }
+
+      const isUsedInKit = await hasLinkedRecords(
+        'product_kit_items',
+        'item_recipe_id',
+        recipe.id,
+        user.id
+      )
+      const isUsedInOrders = await hasLinkedRecords('order_items', 'recipe_id', recipe.id, user.id)
+      const isUsedInSchedule = await hasLinkedRecords(
+        'production_schedule',
+        'recipe_id',
+        recipe.id,
+        user.id
+      )
+
+      if (isUsedInKit || isUsedInOrders || isUsedInSchedule) {
+        setError(DELETE_BLOCKED_MESSAGE)
+        return
+      }
+
+      const { error: recipeIngredientsError } = await supabase
+        .from('recipe_ingredients')
+        .delete()
+        .eq('recipe_id', recipe.id)
+
+      if (recipeIngredientsError) {
+        logSupabaseError('Erro Supabase recipe_ingredients delete:', recipeIngredientsError)
+        throw recipeIngredientsError
+      }
+
+      const { error: recipePackagingError } = await supabase
+        .from('recipe_packaging')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('recipe_id', recipe.id)
+
+      if (recipePackagingError) {
+        logSupabaseError('Erro Supabase recipe_packaging delete:', recipePackagingError)
+        throw recipePackagingError
+      }
+
+      const { error: kitItemsError } = await supabase
+        .from('product_kit_items')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('kit_recipe_id', recipe.id)
+
+      if (kitItemsError) {
+        logSupabaseError('Erro Supabase product_kit_items delete:', kitItemsError)
+        throw kitItemsError
+      }
+
+      const { error: kitCategoriesError } = await supabase
+        .from('kit_category_components')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('kit_recipe_id', recipe.id)
+
+      if (kitCategoriesError) {
+        logSupabaseError('Erro Supabase kit_category_components delete:', kitCategoriesError)
+        throw kitCategoriesError
+      }
+
+      const { error: flexibleGroupsError } = await supabase
+        .from('kit_flexible_groups')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('kit_recipe_id', recipe.id)
+
+      if (flexibleGroupsError) {
+        logSupabaseError('Erro Supabase kit_flexible_groups delete:', flexibleGroupsError)
+        throw flexibleGroupsError
+      }
+
+      const { data: deletedRecipe, error: recipeError } = await supabase
+        .from('recipes')
+        .delete()
+        .eq('id', recipe.id)
+        .eq('user_id', user.id)
+        .select('id')
+        .maybeSingle()
+
+      if (recipeError) {
+        if (isForeignKeyError(recipeError)) {
+          setError(DELETE_BLOCKED_MESSAGE)
+          return
+        }
+
+        logSupabaseError('Erro Supabase recipes delete:', recipeError)
+        throw recipeError
+      }
+
+      if (!deletedRecipe?.id) {
+        throw new Error('Receita/produto nao encontrada ou sem permissao para apagar')
+      }
+
+      setRecipes((currentRecipes) =>
+        currentRecipes.filter((currentRecipe) => currentRecipe.id !== recipe.id)
+      )
+      removeRecipeFromCounts(recipe.id)
+      setSuccessMessage('Receita/produto apagada com sucesso.')
+    } catch (err) {
+      console.error('Erro ao apagar receita:', err)
+      setError(isForeignKeyError(err) ? DELETE_BLOCKED_MESSAGE : 'Falha ao apagar receita/produto')
+    } finally {
+      setDeletingRecipeId(null)
+    }
+  }
+
   const filteredRecipes = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -328,6 +538,13 @@ export default function ReceitasPage() {
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#C0392B]">
             <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+            <CheckCircle2 size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>{successMessage}</span>
           </div>
         )}
 
@@ -385,9 +602,18 @@ export default function ReceitasPage() {
               const usesSuggestedPrice = recipe.sale_price == null
               const packagingCount = packagingCountByRecipeId[recipe.id] ?? 0
               const hasPackaging = packagingCount > 0
-              const productType = recipe.product_type === 'kit' ? 'kit' : 'simples'
-              const isKit = productType === 'kit'
-              const isThirdParty = recipe.is_third_party === true
+              const normalizedProductType =
+                recipe.product_type === 'simples' ? 'simple' : recipe.product_type
+              const isKit = normalizedProductType === 'kit'
+              const isThirdParty =
+                normalizedProductType === 'outsourced' || recipe.is_third_party === true
+              const productTypeLabel = isKit
+                ? 'Kit'
+                : isThirdParty
+                  ? 'Terceirizado'
+                  : normalizedProductType === 'recipe'
+                    ? 'Receita'
+                    : 'Produto simples'
               const kitItemCount = kitItemCountByRecipeId[recipe.id] ?? 0
               const kitCategoryCount = kitCategoryCountByRecipeId[recipe.id] ?? 0
               const kitFlexibleGroupCount = kitFlexibleGroupCountByRecipeId[recipe.id] ?? 0
@@ -418,13 +644,8 @@ export default function ReceitasPage() {
 
                   <div className="mb-4 flex flex-wrap gap-2">
                     <span className="rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-semibold text-[#1A0A08]">
-                      {isKit ? 'Kit' : 'Produto simples'}
+                      {productTypeLabel}
                     </span>
-                    {isThirdParty && (
-                      <span className="rounded-full bg-[#F8EFE0] px-3 py-1 text-xs font-semibold text-[#8A6B1F]">
-                        Terceirizado
-                      </span>
-                    )}
                   </div>
 
                   <div className="mb-4 space-y-3">
@@ -565,6 +786,26 @@ export default function ReceitasPage() {
                         {formatCurrency(recipe.cost_per_unit)}
                       </p>
                     </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-col gap-2 border-t border-[rgba(26,10,8,0.07)] pt-4 sm:flex-row">
+                    <Link
+                      href={`/receitas/${recipe.id}/editar`}
+                      className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+                    >
+                      <Pencil size={16} aria-hidden="true" />
+                      <span>Editar</span>
+                    </Link>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteRecipe(recipe)}
+                      disabled={deletingRecipeId === recipe.id}
+                      className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Trash2 size={16} aria-hidden="true" />
+                      <span>{deletingRecipeId === recipe.id ? 'Apagando...' : 'Apagar'}</span>
+                    </button>
                   </div>
                 </article>
               )
