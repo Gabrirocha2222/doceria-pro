@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { Package, Plus, Search, Trash2 } from 'lucide-react'
+import { Edit3, Package, Plus, Search, Trash2 } from 'lucide-react'
 
 type NumericValue = number | string | null | undefined
 
@@ -339,9 +339,8 @@ export default function PedidosPage() {
               const recurringProgress = getRecurringProgress(order)
 
               return (
-                <Link
+                <article
                   key={order.id}
-                  href={`/pedidos/${order.id}`}
                   className="block overflow-hidden rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white transition-shadow hover:shadow-md"
                 >
                   <div
@@ -420,6 +419,21 @@ export default function PedidosPage() {
                         </div>
                       )}
 
+                      <Link
+                        href={`/pedidos/${order.id}`}
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+                      >
+                        Detalhes
+                      </Link>
+
+                      <Link
+                        href={`/pedidos/${order.id}/editar`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-[#FAF6F0]"
+                      >
+                        <Edit3 size={16} aria-hidden="true" />
+                        <span>Editar</span>
+                      </Link>
+
                       <div
                         className="rounded-full px-3 py-1.5 text-xs font-semibold text-white"
                         style={{ backgroundColor: getStatusColor(order.status) }}
@@ -440,7 +454,7 @@ export default function PedidosPage() {
                       </button>
                     </div>
                   </div>
-                </Link>
+                </article>
               )
             })}
           </div>

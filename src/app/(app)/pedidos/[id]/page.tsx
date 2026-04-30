@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, CheckCircle, Clock, DollarSign, Package, Trash2 } from 'lucide-react'
+import { ArrowLeft, CheckCircle, Clock, DollarSign, Edit3, Package, Trash2 } from 'lucide-react'
 
 type NumericValue = number | string | null | undefined
 
@@ -529,11 +530,21 @@ export default function DetalhesPedidoPage() {
               </p>
             </div>
           </div>
-          <div
-            className="rounded-full px-4 py-2 text-sm font-semibold text-white"
-            style={{ backgroundColor: getStatusColor(order.status) }}
-          >
-            {getStatusLabel(order.status)}
+          <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href={`/pedidos/${order.id}/editar`}
+              className="inline-flex items-center gap-2 rounded-lg bg-[#C0392B] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#A0301F]"
+            >
+              <Edit3 size={16} aria-hidden="true" />
+              <span className="hidden sm:inline">Editar pedido</span>
+              <span className="sm:hidden">Editar</span>
+            </Link>
+            <div
+              className="rounded-full px-4 py-2 text-sm font-semibold text-white"
+              style={{ backgroundColor: getStatusColor(order.status) }}
+            >
+              {getStatusLabel(order.status)}
+            </div>
           </div>
         </div>
       </div>

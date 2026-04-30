@@ -2246,7 +2246,7 @@ export default function NovoPedidoPage() {
   }
 
   return (
-    <div className="w-full pb-8">
+    <div className="w-full pb-44 lg:pb-8">
       <div className="sticky top-0 z-10 border-b border-[rgba(26,10,8,0.07)] bg-white px-4 py-4 lg:px-6">
         <div className="mx-auto flex max-w-4xl items-center gap-4">
           <button
@@ -2272,7 +2272,7 @@ export default function NovoPedidoPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form id="order-form" onSubmit={handleSubmit} className="space-y-6">
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
             <h2 className="mb-4 font-bold text-[#1A0A08]">Informacoes da cliente</h2>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -3853,6 +3853,24 @@ export default function NovoPedidoPage() {
           </div>
         </form>
       </main>
+
+      <div className="fixed bottom-20 left-0 right-0 z-20 border-t border-[rgba(26,10,8,0.07)] bg-white px-4 pt-3 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-[0_-8px_24px_rgba(26,10,8,0.12)] lg:hidden">
+        <div className="mx-auto flex max-w-4xl items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#999999]">Total</p>
+            <p className="truncate text-xl font-bold text-[#1A0A08]">{formatCurrency(finalTotal)}</p>
+          </div>
+          <button
+            type="submit"
+            form="order-form"
+            disabled={isSubmitting}
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#A0301F] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save size={18} aria-hidden="true" />
+            <span>{isSubmitting ? 'Salvando...' : 'Salvar pedido'}</span>
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

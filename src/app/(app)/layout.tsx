@@ -31,6 +31,22 @@ type MenuItem = {
   id: string
 }
 
+type PrimaryAction =
+  | {
+      kind: 'navigate'
+      href: string
+      label: string
+    }
+  | {
+      kind: 'finance-menu'
+      label: string
+    }
+  | {
+      kind: 'notice'
+      label: string
+      message: string
+    }
+
 const menuItems: MenuItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, id: 'dashboard' },
   { href: '/pedidos', label: 'Pedidos', icon: Package, id: 'pedidos' },
@@ -50,6 +66,70 @@ function renderMenuIcon(Icon: MenuItem['icon'], size = 20) {
   return <Icon size={size} aria-hidden="true" />
 }
 
+function isRoute(pathname: string, route: string) {
+  return pathname === route || pathname.startsWith(`${route}/`)
+}
+
+function getPrimaryAction(pathname: string): PrimaryAction {
+  if (isRoute(pathname, '/pedidos-fornecedores')) {
+    return {
+      kind: 'notice',
+      label: 'Pedidos de fornecedores',
+      message: 'Pedidos de fornecedores são gerados pelos pedidos',
+    }
+  }
+
+  if (isRoute(pathname, '/pedidos')) {
+    return { kind: 'navigate', href: '/pedidos/novo', label: 'Novo pedido' }
+  }
+
+  if (isRoute(pathname, '/ingredientes')) {
+    return { kind: 'navigate', href: '/ingredientes/novo', label: 'Novo ingrediente' }
+  }
+
+  if (isRoute(pathname, '/embalagens')) {
+    return { kind: 'navigate', href: '/embalagens/nova', label: 'Nova embalagem' }
+  }
+
+  if (isRoute(pathname, '/clientes')) {
+    return { kind: 'navigate', href: '/clientes/novo', label: 'Nova cliente' }
+  }
+
+  if (isRoute(pathname, '/fornecedores')) {
+    return { kind: 'navigate', href: '/fornecedores/novo', label: 'Novo fornecedor' }
+  }
+
+  if (isRoute(pathname, '/receitas')) {
+    return { kind: 'navigate', href: '/receitas/nova', label: 'Nova receita' }
+  }
+
+  if (isRoute(pathname, '/agenda')) {
+    return { kind: 'navigate', href: '/agenda/novo', label: 'Novo item da agenda' }
+  }
+
+  if (isRoute(pathname, '/financeiro')) {
+    return { kind: 'finance-menu', label: 'Nova movimentação financeira' }
+  }
+
+  if (isRoute(pathname, '/lista-compras')) {
+    return {
+      kind: 'notice',
+      label: 'Gerar lista de compras',
+      message: 'Gere a lista nesta página',
+    }
+  }
+
+  if (isRoute(pathname, '/configuracoes')) {
+    return {
+      kind: 'notice',
+      label: 'Configurações',
+      message: 'Use as seções da página',
+    }
+  }
+
+  return { kind: 'navigate', href: '/pedidos/novo', label: 'Novo pedido' }
+}
+
 export default function AppLayout({
   children,
 }: {
@@ -57,10 +137,13 @@ export default function AppLayout({
 }) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
+  const [isFinanceActionMenuOpen, setIsFinanceActionMenuOpen] = useState(false)
+  const [primaryActionNotice, setPrimaryActionNotice] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [userInitial, setUserInitial] = useState('A')
   const router = useRouter()
   const pathname = usePathname()
+  const primaryAction = getPrimaryAction(pathname)
   const supabase = createClient()
 
   useEffect(() => {
@@ -73,9 +156,32 @@ export default function AppLayout({
     getUser()
   }, [supabase.auth])
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setIsFinanceActionMenuOpen(false)
+      setPrimaryActionNotice(null)
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [pathname])
+
+  useEffect(() => {
+    if (!primaryActionNotice) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setPrimaryActionNotice(null)
+    }, 3000)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [primaryActionNotice])
+
   const handleLogout = async () => {
     setIsMobileMenuOpen(false)
     setIsAccountMenuOpen(false)
+    setIsFinanceActionMenuOpen(false)
+    setPrimaryActionNotice(null)
     setIsLoading(true)
     try {
       await supabase.auth.signOut()
@@ -87,28 +193,53 @@ export default function AppLayout({
     }
   }
 
-  const handleNewOrder = () => {
+  const handlePrimaryAction = () => {
     setIsMobileMenuOpen(false)
     setIsAccountMenuOpen(false)
-    router.push('/pedidos/novo')
+    setPrimaryActionNotice(null)
+
+    if (primaryAction.kind === 'finance-menu') {
+      setIsFinanceActionMenuOpen((isOpen) => !isOpen)
+      return
+    }
+
+    setIsFinanceActionMenuOpen(false)
+
+    if (primaryAction.kind === 'notice') {
+      setPrimaryActionNotice(primaryAction.message)
+      return
+    }
+
+    router.push(primaryAction.href)
+  }
+
+  const closeFinanceActionMenu = () => {
+    setIsFinanceActionMenuOpen(false)
+    setPrimaryActionNotice(null)
   }
 
   const openMobileMenu = () => {
     setIsAccountMenuOpen(false)
+    setIsFinanceActionMenuOpen(false)
+    setPrimaryActionNotice(null)
     setIsMobileMenuOpen(true)
   }
 
   const toggleMobileMenu = () => {
     setIsAccountMenuOpen(false)
+    setIsFinanceActionMenuOpen(false)
+    setPrimaryActionNotice(null)
     setIsMobileMenuOpen((isOpen) => !isOpen)
   }
 
   const toggleAccountMenu = () => {
     setIsMobileMenuOpen(false)
+    setIsFinanceActionMenuOpen(false)
+    setPrimaryActionNotice(null)
     setIsAccountMenuOpen((isOpen) => !isOpen)
   }
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`)
+  const isActive = (href: string) => isRoute(pathname, href)
 
   return (
     <div className="min-h-screen bg-[#FAF6F0] flex flex-col lg:flex-row">
@@ -226,11 +357,56 @@ export default function AppLayout({
 
           {/* Central + Button */}
           <div className="flex-1 flex items-center justify-center relative -top-4">
+            {isFinanceActionMenuOpen && (
+              <div
+                className="lg:hidden fixed inset-0 z-40"
+                onClick={closeFinanceActionMenu}
+              >
+                <div
+                  id="mobile-finance-action-menu"
+                  role="menu"
+                  aria-label="Nova movimentação financeira"
+                  className="fixed bottom-24 left-1/2 w-[92vw] max-w-[320px] -translate-x-1/2 rounded-xl border border-[rgba(26,10,8,0.08)] bg-white p-2 shadow-2xl"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <Link
+                    href="/financeiro/nova-entrada"
+                    role="menuitem"
+                    onClick={closeFinanceActionMenu}
+                    className="flex min-h-12 w-full items-center rounded-lg px-4 py-3 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+                  >
+                    Nova entrada
+                  </Link>
+
+                  <Link
+                    href="/financeiro/nova-saida"
+                    role="menuitem"
+                    onClick={closeFinanceActionMenu}
+                    className="flex min-h-12 w-full items-center rounded-lg px-4 py-3 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+                  >
+                    Nova saída
+                  </Link>
+                </div>
+              </div>
+            )}
+
+            {primaryActionNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="lg:hidden fixed bottom-24 left-1/2 z-30 w-[92vw] max-w-[320px] -translate-x-1/2 rounded-xl bg-[#1A0A08] px-4 py-3 text-center text-sm font-medium text-white shadow-xl"
+              >
+                {primaryActionNotice}
+              </div>
+            )}
+
             <button
               type="button"
-              onClick={handleNewOrder}
+              onClick={handlePrimaryAction}
               className="w-14 h-14 rounded-full bg-[#C0392B] hover:bg-[#A0301F] text-white flex items-center justify-center shadow-lg transition-all duration-200 active:scale-95"
-              aria-label="Novo pedido"
+              aria-label={primaryAction.label}
+              aria-expanded={primaryAction.kind === 'finance-menu' ? isFinanceActionMenuOpen : undefined}
+              aria-controls={primaryAction.kind === 'finance-menu' ? 'mobile-finance-action-menu' : undefined}
             >
               <Plus size={28} />
             </button>

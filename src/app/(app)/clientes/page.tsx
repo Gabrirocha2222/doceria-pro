@@ -33,14 +33,18 @@ interface Customer {
   name: string
   phone: string | null
   whatsapp: string | null
+  email: string | null
   address: string | null
   birthday: string | null
+  birth_date: string | null
   preferences: string | null
   notes: string | null
   balance: number | string | null
   satisfaction: 'like' | 'dislike' | null
   notes_private: string | null
-  created_at?: string
+  last_order_date: string | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 type CustomerOrder = {
@@ -64,11 +68,14 @@ type CustomerEditForm = {
   notes_private: string
 }
 
+const CUSTOMER_SELECT =
+  'id,user_id,name,phone,whatsapp,email,address,birthday,birth_date,preferences,notes,balance,satisfaction,notes_private,last_order_date,created_at,updated_at'
+
 function onlyDigits(value: string) {
   return value.replace(/\D/g, '')
 }
 
-function getWhatsAppHref(whatsapp: string | null) {
+function getWhatsAppHref(whatsapp: string | null | undefined) {
   if (!whatsapp) return ''
 
   const digits = onlyDigits(whatsapp)
@@ -109,7 +116,7 @@ function getInitials(name: string) {
   return initials || '?'
 }
 
-function formatBirthday(birthday: string | null) {
+function formatBirthday(birthday: string | null | undefined) {
   if (!birthday) return 'Não informado'
 
   const [year, month, day] = birthday.split('-').map(Number)
@@ -132,9 +139,20 @@ function optionalDate(value: string) {
   return value || null
 }
 
+function getSupabaseError(error: unknown) {
+  return typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+}
+
+function stringifyError(error: unknown) {
+  try {
+    return JSON.stringify(error, null, 2)
+  } catch {
+    return null
+  }
+}
+
 function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
+  const supabaseError = getSupabaseError(error)
 
   console.error(context, {
     message: supabaseError.message,
@@ -142,7 +160,18 @@ function logSupabaseError(context: string, error: unknown) {
     hint: supabaseError.hint,
     code: supabaseError.code,
     fullError: error,
+    stringified: stringifyError(error),
   })
+}
+
+function getCustomerPhone(customer: Pick<Customer, 'whatsapp' | 'phone'>) {
+  const customerPhone = customer.whatsapp ?? customer.phone
+  return customerPhone
+}
+
+function getCustomerBirthday(customer: Pick<Customer, 'birth_date' | 'birthday'>) {
+  const customerBirthday = customer.birth_date ?? customer.birthday
+  return customerBirthday
 }
 
 function buildEditForm(customer: Customer): CustomerEditForm {
@@ -151,7 +180,7 @@ function buildEditForm(customer: Customer): CustomerEditForm {
     phone: customer.phone ?? '',
     whatsapp: customer.whatsapp ?? '',
     address: customer.address ?? '',
-    birthday: customer.birthday ?? '',
+    birthday: getCustomerBirthday(customer) ?? '',
     preferences: customer.preferences ?? '',
     notes: customer.notes ?? '',
     balance: String(customer.balance ?? ''),
@@ -177,6 +206,7 @@ function getDateInputValue(date: Date) {
 export default function ClientesPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [orders, setOrders] = useState<CustomerOrder[]>([])
+  const [orderSummariesAvailable, setOrderSummariesAvailable] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -192,6 +222,7 @@ export default function ClientesPage() {
     async function loadCustomers() {
       setIsLoading(true)
       setError('')
+      setOrderSummariesAvailable(true)
 
       try {
         const {
@@ -203,30 +234,55 @@ export default function ClientesPage() {
           throw new Error('Usuário não autenticado')
         }
 
-        const { data, error: customersError } = await supabase
+        const { data: customersData, error: customersError } = await supabase
           .from('customers')
-          .select('*')
+          .select(CUSTOMER_SELECT)
           .eq('user_id', user.id)
-          .order('name', { ascending: true })
+          .order('created_at', { ascending: false })
 
         if (customersError) throw customersError
 
-        const { data: ordersData, error: ordersError } = await supabase
-          .from('orders')
-          .select('id, customer_id, customer_name, delivery_date, created_at')
-          .eq('user_id', user.id)
-          .order('delivery_date', { ascending: false })
+        let customerOrders: CustomerOrder[] = []
+        let didLoadOrders = true
 
-        if (ordersError) throw ordersError
+        try {
+          const { data: ordersData, error: ordersError } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('user_id', user.id)
 
-        if (isMounted) {
-          setCustomers((data ?? []) as Customer[])
-          setOrders((ordersData ?? []) as CustomerOrder[])
+          if (ordersError) {
+            logSupabaseError('Erro ao carregar pedidos para resumos de clientes:', ordersError)
+            didLoadOrders = false
+          } else {
+            customerOrders = (ordersData ?? []) as CustomerOrder[]
+          }
+        } catch (ordersError) {
+          logSupabaseError('Erro ao carregar pedidos para resumos de clientes:', ordersError)
+          didLoadOrders = false
         }
-      } catch (err) {
-        logSupabaseError('Erro ao carregar clientes:', err)
+
         if (isMounted) {
-          setError('Falha ao carregar clientes')
+          setCustomers((customersData ?? []) as Customer[])
+          setOrders(customerOrders)
+          setOrderSummariesAvailable(didLoadOrders)
+        }
+      } catch (error) {
+        const loadError = getSupabaseError(error)
+
+        console.error('Erro ao carregar clientes:', {
+          message: loadError.message,
+          details: loadError.details,
+          hint: loadError.hint,
+          code: loadError.code,
+          fullError: error,
+          stringified: stringifyError(error),
+        })
+
+        if (isMounted) {
+          setError(
+            'Falha ao carregar clientes. Verifique se a query da página está usando apenas colunas existentes.'
+          )
         }
       } finally {
         if (isMounted) {
@@ -276,6 +332,8 @@ export default function ClientesPage() {
   }, [customers])
 
   const inactiveCustomers = useMemo(() => {
+    if (!orderSummariesAvailable) return []
+
     const cutoffDate = new Date()
     cutoffDate.setDate(cutoffDate.getDate() - 90)
     const cutoffValue = getDateInputValue(cutoffDate)
@@ -291,9 +349,11 @@ export default function ClientesPage() {
         })
       })
       .slice(0, 6)
-  }, [customers, ordersByCustomerId])
+  }, [customers, orderSummariesAvailable, ordersByCustomerId])
 
   const partyReminders = useMemo(() => {
+    if (!orderSummariesAvailable) return []
+
     const today = new Date()
     const reminderEndDate = new Date(today)
     reminderEndDate.setDate(reminderEndDate.getDate() + 14)
@@ -327,7 +387,7 @@ export default function ClientesPage() {
         }
       })
       .filter((reminder): reminder is { key: string; text: string } => reminder !== null)
-  }, [customers, orders])
+  }, [customers, orderSummariesAvailable, orders])
 
   function startEdit(customer: Customer) {
     setEditingId(customer.id)
@@ -374,13 +434,27 @@ export default function ClientesPage() {
         throw new Error('Usuario nao autenticado')
       }
 
-      const satisfaction = editForm.satisfaction || null
-      const updatedCustomer = {
+      const satisfaction: Customer['satisfaction'] = editForm.satisfaction || null
+      const updatedCustomer: Pick<
+        Customer,
+        | 'name'
+        | 'phone'
+        | 'whatsapp'
+        | 'address'
+        | 'birthday'
+        | 'birth_date'
+        | 'preferences'
+        | 'notes'
+        | 'balance'
+        | 'satisfaction'
+        | 'notes_private'
+      > = {
         name: editForm.name.trim(),
         phone: optionalText(editForm.phone),
         whatsapp: optionalText(editForm.whatsapp),
         address: optionalText(editForm.address),
         birthday: optionalDate(editForm.birthday),
+        birth_date: optionalDate(editForm.birthday),
         preferences: optionalText(editForm.preferences),
         notes: optionalText(editForm.notes),
         balance,
@@ -591,7 +665,9 @@ export default function ClientesPage() {
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredCustomers.map((customer) => {
-              const whatsappHref = getWhatsAppHref(customer.whatsapp)
+              const customerPhone = getCustomerPhone(customer)
+              const customerBirthday = getCustomerBirthday(customer)
+              const whatsappHref = getWhatsAppHref(customerPhone)
               const currentEditForm = editingId === customer.id ? editForm : null
 
               return (
@@ -727,7 +803,7 @@ export default function ClientesPage() {
                         <div className="min-w-0">
                           <p className="text-xs font-medium text-[#999999]">Telefone</p>
                           <p className="mt-0.5 break-words font-semibold text-[#1A0A08]">
-                            {customer.phone || 'Não informado'}
+                            {customerPhone || 'Não informado'}
                           </p>
                         </div>
                       </div>
@@ -743,7 +819,7 @@ export default function ClientesPage() {
                               rel="noreferrer"
                               className="mt-0.5 block break-words font-semibold text-[#1A0A08] transition-colors hover:text-[#C0392B]"
                             >
-                              {customer.whatsapp}
+                              {customerPhone}
                             </a>
                           ) : (
                             <p className="mt-0.5 font-semibold text-[#1A0A08]">Não informado</p>
@@ -757,7 +833,7 @@ export default function ClientesPage() {
                       <div className="min-w-0">
                         <p className="text-xs font-medium text-[#999999]">Aniversário</p>
                         <p className="mt-0.5 break-words font-semibold text-[#1A0A08]">
-                          {formatBirthday(customer.birthday)}
+                          {formatBirthday(customerBirthday)}
                         </p>
                       </div>
                     </div>
