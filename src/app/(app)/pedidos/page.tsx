@@ -140,6 +140,7 @@ export default function PedidosPage() {
         .from('orders')
         .select(`
           id,
+          product_name,
           status,
           payment_status,
           created_at,
