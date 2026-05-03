@@ -5,6 +5,12 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Calculator, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  type NumericValue,
+  formatCurrency,
+  optionalText,
+  parseDecimal,
+} from '@/lib/format'
 
 type PackagingForm = {
   name: string
@@ -29,12 +35,6 @@ const initialForm: PackagingForm = {
   capacity_unit: '',
   notes: '',
 }
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
 function parseOptionalDecimal(value: string) {
   const trimmedValue = value.trim()
 
@@ -44,28 +44,11 @@ function parseOptionalDecimal(value: string) {
 
   return Number.isFinite(parsed) ? parsed : null
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-
-  return trimmedValue || null
-}
-
 function calculateCostPerUnit(packageCost: number, packageQuantity: number) {
   if (packageCost <= 0 || packageQuantity <= 0) return 0
 
   return packageCost / packageQuantity
 }
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value)
-}
-
 export default function NovaEmbalagemPage() {
   const [form, setForm] = useState<PackagingForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)

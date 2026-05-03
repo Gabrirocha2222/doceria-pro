@@ -19,6 +19,9 @@ import {
   X,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { type NumericValue, formatCurrency, optionalText } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
+import { Pagination, paginate } from '@/components/Pagination'
 
 type SupabaseErrorLike = {
   message?: string
@@ -50,7 +53,6 @@ interface Customer {
 type CustomerOrder = {
   id: string
   customer_id: string | null
-  customer_name: string | null
   delivery_date: string | null
   created_at: string | null
 }
@@ -69,7 +71,7 @@ type CustomerEditForm = {
 }
 
 const CUSTOMER_SELECT =
-  'id,user_id,name,phone,whatsapp,email,address,birthday,birth_date,preferences,notes,balance,satisfaction,notes_private,last_order_date,created_at,updated_at'
+  'id,name,phone,whatsapp,email,address,birthday,birth_date,preferences,notes,balance,satisfaction,notes_private,last_order_date,created_at'
 
 function onlyDigits(value: string) {
   return value.replace(/\D/g, '')
@@ -95,14 +97,6 @@ function parseNumeric(value: number | string | null | undefined) {
 
   return 0
 }
-
-function formatCurrency(value: number | string | null | undefined) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumeric(value))
-}
-
 function getInitials(name: string) {
   const initials = name
     .trim()
@@ -129,12 +123,6 @@ function formatBirthday(birthday: string | null | undefined) {
     month: 'long',
   }).format(date)
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
 function optionalDate(value: string) {
   return value || null
 }
@@ -150,20 +138,6 @@ function stringifyError(error: unknown) {
     return null
   }
 }
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError = getSupabaseError(error)
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-    stringified: stringifyError(error),
-  })
-}
-
 function getCustomerPhone(customer: Pick<Customer, 'whatsapp' | 'phone'>) {
   const customerPhone = customer.whatsapp ?? customer.phone
   return customerPhone
@@ -214,6 +188,7 @@ export default function ClientesPage() {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const supabase = useMemo(() => createClient(), [])
 
   useEffect(() => {
@@ -248,7 +223,7 @@ export default function ClientesPage() {
         try {
           const { data: ordersData, error: ordersError } = await supabase
             .from('orders')
-            .select('*')
+            .select('id, customer_id, delivery_date, created_at')
             .eq('user_id', user.id)
 
           if (ordersError) {
@@ -298,6 +273,8 @@ export default function ClientesPage() {
     }
   }, [supabase])
 
+  useEffect(() => { setCurrentPage(1) }, [searchQuery])
+
   const filteredCustomers = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -307,6 +284,8 @@ export default function ClientesPage() {
       customer.name.toLowerCase().includes(query)
     )
   }, [customers, searchQuery])
+
+  const { paged: pagedCustomers, totalPages } = paginate(filteredCustomers, currentPage)
 
   const ordersByCustomerId = useMemo(() => {
     const groupedOrders = new Map<string, CustomerOrder[]>()
@@ -375,7 +354,7 @@ export default function ClientesPage() {
         const customer = order.customer_id
           ? customers.find((currentCustomer) => currentCustomer.id === order.customer_id)
           : undefined
-        const customerName = customer?.name || order.customer_name || 'cliente'
+        const customerName = customer?.name || 'cliente'
         const reminderKey = `${customerName}-${anniversaryValue}`
 
         if (reminderKeys.has(reminderKey)) return null
@@ -411,13 +390,13 @@ export default function ClientesPage() {
     if (!editForm) return
 
     if (!editForm.name.trim()) {
-      setError('Nome da cliente e obrigatorio')
+      setError('Nome da cliente é obrigatório')
       return
     }
 
     const balance = parseNumeric(editForm.balance)
     if (balance < 0) {
-      setError('Saldo nao pode ser negativo')
+      setError('Saldo não pode ser negativo')
       return
     }
 
@@ -431,7 +410,7 @@ export default function ClientesPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const satisfaction: Customer['satisfaction'] = editForm.satisfaction || null
@@ -641,7 +620,7 @@ export default function ClientesPage() {
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
             <p className="mt-3 text-sm text-[#999999]">Carregando clientes...</p>
           </div>
-        ) : filteredCustomers.length === 0 ? (
+        ) : pagedCustomers.length === 0 && filteredCustomers.length === 0 ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
             <UserRound className="mx-auto mb-4 h-12 w-12 text-[#C9A84C]" aria-hidden="true" />
             <p className="text-lg font-semibold text-[#1A0A08]">
@@ -663,8 +642,9 @@ export default function ClientesPage() {
             )}
           </div>
         ) : (
+          <>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {filteredCustomers.map((customer) => {
+            {pagedCustomers.map((customer) => {
               const customerPhone = getCustomerPhone(customer)
               const customerBirthday = getCustomerBirthday(customer)
               const whatsappHref = getWhatsAppHref(customerPhone)
@@ -746,7 +726,7 @@ export default function ClientesPage() {
                         onChange={(event) => updateEditForm('satisfaction', event.target.value)}
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       >
-                        <option value="">Sem avaliacao</option>
+                        <option value="">Sem avaliação</option>
                         <option value="like">Like</option>
                         <option value="dislike">Dislike</option>
                       </select>
@@ -754,28 +734,28 @@ export default function ClientesPage() {
                         type="text"
                         value={currentEditForm.address}
                         onChange={(event) => updateEditForm('address', event.target.value)}
-                        placeholder="Endereco"
+                        placeholder="Endereço"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                       <input
                         type="text"
                         value={currentEditForm.preferences}
                         onChange={(event) => updateEditForm('preferences', event.target.value)}
-                        placeholder="Preferencias"
+                        placeholder="Preferências"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                       <input
                         type="text"
                         value={currentEditForm.notes}
                         onChange={(event) => updateEditForm('notes', event.target.value)}
-                        placeholder="Observacoes"
+                        placeholder="Observações"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                       <input
                         type="text"
                         value={currentEditForm.notes_private}
                         onChange={(event) => updateEditForm('notes_private', event.target.value)}
-                        placeholder="Observacoes internas"
+                        placeholder="Observações internas"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                     </div>
@@ -790,7 +770,7 @@ export default function ClientesPage() {
                         </p>
                       </div>
                       <div className="rounded-lg bg-[#FAF6F0] p-3">
-                        <p className="text-xs font-medium text-[#999999]">Satisfacao</p>
+                        <p className="text-xs font-medium text-[#999999]">Satisfação</p>
                         <p className="mt-0.5 font-bold text-[#1A0A08]">
                           {getSatisfactionLabel(customer.satisfaction)}
                         </p>
@@ -926,6 +906,8 @@ export default function ClientesPage() {
               )
             })}
           </div>
+          <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          </>
         )}
       </main>
     </div>

@@ -16,6 +16,8 @@ import {
   Utensils,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { formatCurrency, formatNumber } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type ProductType = 'simple' | 'recipe' | 'kit' | 'outsourced' | 'simples'
@@ -72,32 +74,6 @@ type Supplier = {
 
 const DELETE_BLOCKED_MESSAGE =
   'Não foi possível apagar porque esta receita/produto já está vinculada a outros registros.'
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-  })
-}
-
 function isForeignKeyError(error: unknown) {
   const supabaseError =
     typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
@@ -110,20 +86,6 @@ function isForeignKeyError(error: unknown) {
     details.includes('foreign key')
   )
 }
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 3,
-  }).format(parseNumericValue(value))
-}
-
 function formatYield(recipe: Recipe) {
   const amount = formatNumber(recipe.yield_amount)
   const unit = recipe.yield_unit?.trim() || 'unidades'
@@ -393,7 +355,7 @@ export default function ReceitasPage() {
       }
 
       if (!ownedRecipe?.id) {
-        throw new Error('Receita/produto nao encontrada ou sem permissao para apagar')
+        throw new Error('Receita/produto não encontrada ou sem permissão para apagar')
       }
 
       const isUsedInKit = await hasLinkedRecords(
@@ -488,7 +450,7 @@ export default function ReceitasPage() {
       }
 
       if (!deletedRecipe?.id) {
-        throw new Error('Receita/produto nao encontrada ou sem permissao para apagar')
+        throw new Error('Receita/produto não encontrada ou sem permissão para apagar')
       }
 
       setRecipes((currentRecipes) =>
@@ -713,7 +675,7 @@ export default function ReceitasPage() {
                               : `${kitFlexibleGroupCount} grupos flexiveis`}
                           </p>
                         )}
-                        {kitComponentCount === 0 && <p>Composicao ainda nao cadastrada.</p>}
+                        {kitComponentCount === 0 && <p>Composição ainda não cadastrada.</p>}
                       </div>
                     </div>
                   )}
@@ -722,7 +684,7 @@ export default function ReceitasPage() {
                     <div className="mb-4 rounded-lg bg-[#FAF6F0] p-3 text-sm">
                       <p className="font-semibold text-[#1A0A08]">Terceirizado</p>
                       <p className="mt-1 text-xs text-[#999999]">
-                        {supplierName ? `Fornecedor: ${supplierName}` : 'Fornecedor nao definido'}
+                        {supplierName ? `Fornecedor: ${supplierName}` : 'Fornecedor não definido'}
                       </p>
                       <p className="mt-2 text-xs text-[#999999]">Custo fornecedor</p>
                       <p className="font-bold text-[#1A0A08]">

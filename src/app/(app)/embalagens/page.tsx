@@ -4,6 +4,13 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, Boxes, Edit3, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  type NumericValue,
+  formatCurrency,
+  formatNumber,
+  optionalText,
+} from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type SupabaseErrorLike = {
   message?: string
@@ -50,44 +57,9 @@ function parseNumeric(value: number | string | null | undefined) {
 
   return 0
 }
-
-function formatCurrency(value: number | string | null | undefined) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(parseNumeric(value))
-}
-
-function formatNumber(value: number | string | null | undefined) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumeric(value))
-}
-
 function getCategoryLabel(category: string | null) {
   return category?.trim() || 'Sem categoria'
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function buildEditForm(packaging: Packaging): PackagingEditForm {
   return {
     name: packaging.name,
@@ -217,7 +189,7 @@ export default function EmbalagensPage() {
     if (!editForm) return
 
     if (!editForm.name.trim()) {
-      setError('Nome da embalagem e obrigatorio')
+      setError('Nome da embalagem é obrigatório')
       return
     }
 
@@ -231,7 +203,7 @@ export default function EmbalagensPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const updatedPackaging = {
@@ -286,7 +258,7 @@ export default function EmbalagensPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const { error: deleteError } = await supabase
@@ -511,7 +483,7 @@ export default function EmbalagensPage() {
                           type="text"
                           value={currentEditForm.notes}
                           onChange={(event) => updateEditForm('notes', event.target.value)}
-                          placeholder="Observacoes"
+                          placeholder="Observações"
                           className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                         />
                       </div>

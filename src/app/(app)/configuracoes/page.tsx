@@ -18,6 +18,7 @@ import {
   Users,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type CategoryType = 'produtos' | 'receitas_base' | 'embalagens' | 'financeiro' | 'acrescimos'
@@ -252,20 +253,6 @@ function normalizeName(value: string) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 }
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function createDefaultSettingsPayload(userId: string) {
   return {
     user_id: userId,
@@ -1145,10 +1132,6 @@ export default function ConfiguracoesPage() {
       <section>
         <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 shadow-sm lg:p-5">
           <h2 className="text-lg font-bold text-[#1A0A08]">Equipe e permissões</h2>
-          <p className="mt-2 max-w-3xl text-sm text-[#6F625F]">
-            Em breve você poderá cadastrar pessoas da equipe, definir acesso total ou bloquear módulos como
-            Financeiro, Configurações e Clientes.
-          </p>
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1163,14 +1146,7 @@ export default function ConfiguracoesPage() {
           ))}
         </div>
 
-        <button
-          type="button"
-          disabled
-          className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white opacity-50"
-        >
-          <Users size={17} aria-hidden="true" />
-          <span>Configurar equipe em breve</span>
-        </button>
+        {/* TODO: implementar configuração de equipe */}
       </section>
     )
   }

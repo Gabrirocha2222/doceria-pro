@@ -16,6 +16,14 @@ import {
   Wallet,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { Pagination, paginate } from '@/components/Pagination'
+import {
+  formatCurrency,
+  formatNumber,
+  normalizeUnit,
+  parseNumericValue,
+} from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type TransactionType = 'entrada' | 'saida'
@@ -314,34 +322,6 @@ function getCurrentWeekRange(): DateRange {
 function getCurrentMonthRange(): DateRange {
   return getMonthRange(getCurrentMonth())
 }
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-
-  return 0
-}
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(value)
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 3,
-  }).format(value)
-}
-
 function formatDate(dateValue: string) {
   const [year, month, day] = dateValue.split('-').map(Number)
 
@@ -371,11 +351,6 @@ function normalizeText(value: string | null | undefined) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 }
-
-function normalizeUnit(value: string) {
-  return normalizeText(value)
-}
-
 function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
@@ -449,7 +424,7 @@ function getCustomerName(order: Order, customersById: Map<string, CustomerSummar
     if (customer?.name) return customer.name
   }
 
-  return order.customer_name || 'Cliente nao informado'
+  return order.customer_name || 'Cliente não informado'
 }
 
 function getOrderTitle(order: Order, items: OrderItem[]) {
@@ -723,7 +698,7 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
         categories.ingredients += cost
         addPurchaseForecastItem(purchasesByKey, {
           key: `ingredient:${recipeIngredient.ingredient_id}`,
-          name: ingredient?.name || 'Ingrediente nao encontrado',
+          name: ingredient?.name || 'Ingrediente não encontrado',
           quantity: neededQuantity,
           unit: recipeUnit,
           estimatedCost: cost,
@@ -748,7 +723,7 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
         categories.packaging += cost
         addPurchaseForecastItem(purchasesByKey, {
           key: `packaging:${recipePackaging.packaging_id}`,
-          name: packaging?.name || 'Embalagem nao encontrada',
+          name: packaging?.name || 'Embalagem não encontrada',
           quantity: neededQuantity,
           unit,
           estimatedCost: cost,
@@ -811,7 +786,7 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
   }
 
   if (hasPartialEstimate) {
-    warnings.push('Alguns custos estao incompletos por falta de composicao ou preco cadastrado.')
+    warnings.push('Alguns custos estão incompletos por falta de composição ou preço cadastrado.')
   }
 
   const purchases = Array.from(purchasesByKey.values()).sort((firstItem, secondItem) => {
@@ -840,17 +815,6 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
     warnings: Array.from(new Set(warnings)),
   }
 }
-
-function logSupabaseError(context: string, error: SupabaseErrorDetails) {
-  console.error(context, {
-    message: error.message,
-    details: error.details,
-    hint: error.hint,
-    code: error.code,
-    fullError: error,
-  })
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message
@@ -877,6 +841,7 @@ export default function FinanceiroPage() {
   const [isLoadingReports, setIsLoadingReports] = useState(true)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const supabase = useMemo(() => createClient(), [])
   const reportRange = useMemo(
     () => getReportRange(reportPeriod, customStartDate, customEndDate),
@@ -903,7 +868,7 @@ export default function FinanceiroPage() {
         const monthRange = getMonthRange(selectedMonth)
         const { data, error: transactionsError } = await supabase
           .from('financial_transactions')
-          .select('*')
+          .select('id, type, description, amount, category, transaction_date, notes')
           .eq('user_id', user.id)
           .gte('transaction_date', monthRange.start)
           .lte('transaction_date', monthRange.end)
@@ -956,7 +921,7 @@ export default function FinanceiroPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuario nao autenticado')
+          throw new Error('Usuário não autenticado')
         }
 
         const warnings: string[] = []
@@ -1005,7 +970,7 @@ export default function FinanceiroPage() {
             : Promise.resolve({ data: [] as OrderCakeTopper[], error: null }),
           supabase
             .from('financial_transactions')
-            .select('*')
+            .select('id, type, description, amount, category, transaction_date, notes')
             .eq('user_id', user.id)
             .gte('transaction_date', reportRange.start)
             .lte('transaction_date', reportRange.end),
@@ -1193,6 +1158,8 @@ export default function FinanceiroPage() {
     )
   }, [transactions])
 
+  useEffect(() => { setCurrentPage(1) }, [searchQuery, typeFilter, categoryFilter])
+
   const filteredTransactions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -1207,6 +1174,8 @@ export default function FinanceiroPage() {
       return matchesSearch && matchesType && matchesCategory
     })
   }, [categoryFilter, searchQuery, transactions, typeFilter])
+
+  const { paged: pagedTransactions, totalPages: transactionPages } = paginate(filteredTransactions, currentPage)
 
   const summary = useMemo(() => {
     const entradas = transactions
@@ -1752,7 +1721,7 @@ export default function FinanceiroPage() {
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
             <p className="mt-3 text-sm text-[#999999]">Carregando movimentações...</p>
           </div>
-        ) : filteredTransactions.length === 0 ? (
+        ) : pagedTransactions.length === 0 && filteredTransactions.length === 0 ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
             <PiggyBank className="mx-auto mb-4 h-12 w-12 text-[#C9A84C]" aria-hidden="true" />
             <p className="text-lg font-semibold text-[#1A0A08]">
@@ -1779,8 +1748,9 @@ export default function FinanceiroPage() {
             </div>
           </div>
         ) : (
+          <>
           <div className="space-y-3">
-            {filteredTransactions.map((transaction) => {
+            {pagedTransactions.map((transaction) => {
               const isEntry = transaction.type === 'entrada'
               const color = isEntry ? '#17803D' : '#C0392B'
               const Icon = isEntry ? ArrowUpCircle : ArrowDownCircle
@@ -1835,6 +1805,8 @@ export default function FinanceiroPage() {
               )
             })}
           </div>
+          <Pagination currentPage={currentPage} totalPages={transactionPages} onPageChange={setCurrentPage} />
+          </>
         )}
       </main>
     </div>

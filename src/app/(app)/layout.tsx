@@ -451,15 +451,7 @@ export default function AppLayout({
               className="fixed right-4 top-14 w-56 rounded-xl bg-white py-2 shadow-2xl border border-[rgba(26,10,8,0.08)]"
               onClick={(event) => event.stopPropagation()}
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => setIsAccountMenuOpen(false)}
-                className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-medium text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
-              >
-                <Users size={18} aria-hidden="true" />
-                <span>Minha conta em breve</span>
-              </button>
+              {/* TODO: implementar */}
 
               <Link
                 href="/configuracoes"

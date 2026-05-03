@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { optionalText, parseDecimal } from '@/lib/format'
 
 type CustomerForm = {
   name: string
@@ -31,21 +32,9 @@ const initialForm: CustomerForm = {
   satisfaction: '',
   notes_private: '',
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
 function optionalDate(value: string) {
   return value || null
 }
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
 export default function NovaClientePage() {
   const [form, setForm] = useState<CustomerForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -75,7 +64,7 @@ export default function NovaClientePage() {
 
     const balance = parseDecimal(form.balance)
     if (balance < 0) {
-      setError('Saldo inicial nao pode ser negativo')
+      setError('Saldo inicial não pode ser negativo')
       return
     }
 
@@ -261,7 +250,7 @@ export default function NovaClientePage() {
 
               <div>
                 <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="satisfaction">
-                  Satisfacao
+                  Satisfação
                 </label>
                 <select
                   id="satisfaction"
@@ -270,7 +259,7 @@ export default function NovaClientePage() {
                   onChange={handleChange}
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 >
-                  <option value="">Sem avaliacao</option>
+                  <option value="">Sem avaliação</option>
                   <option value="like">Like</option>
                   <option value="dislike">Dislike</option>
                 </select>

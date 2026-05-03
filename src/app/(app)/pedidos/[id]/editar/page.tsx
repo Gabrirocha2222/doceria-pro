@@ -6,6 +6,17 @@ import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowLeft, Package, Plus, Save, Trash2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { ImageUpload } from '@/components/ui/ImageUpload'
+import {
+  createLocalId,
+  formatCurrency,
+  formatNumber,
+  optionalMoney,
+  optionalText,
+  parseDecimal,
+  parseNumericValue,
+  toInputValue,
+} from '@/lib/format'
 
 type NumericValue = number | string | null | undefined
 type ProductType = 'simples' | 'kit'
@@ -297,7 +308,7 @@ type ParsedChildNotes = {
 const statusOptions = [
   { id: 'novo', label: 'Novo' },
   { id: 'confirmado', label: 'Confirmado' },
-  { id: 'em_producao', label: 'Em producao' },
+  { id: 'em_producao', label: 'Em produção' },
   { id: 'pronto', label: 'Pronto' },
   { id: 'entregue', label: 'Entregue' },
   { id: 'cancelado', label: 'Cancelado' },
@@ -347,67 +358,14 @@ const initialCakeTopper: CakeTopperForm = {
 
 const inputClass =
   'w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]'
-
-function createLocalId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-
-  return Math.random().toString(36).slice(2)
-}
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue ? trimmedValue : null
-}
-
-function optionalMoney(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue ? parseDecimal(trimmedValue) : null
-}
-
 function optionalUuid(value: string) {
   const trimmedValue = value.trim()
   return trimmedValue ? trimmedValue : null
 }
-
-function toInputValue(value: NumericValue) {
-  if (value === null || value === undefined) return ''
-  return String(value)
-}
-
 function toDateInput(value?: string | null) {
   if (!value) return ''
   return value.split('T')[0] ?? ''
 }
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
 function getEffectiveSalePrice(recipe: Recipe) {
   return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
 }
@@ -1066,7 +1024,7 @@ export default function EditarPedidoPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuaria nao autenticada. Faca login para continuar.')
+          throw new Error('Usuária não autenticada. Faça login para continuar.')
         }
 
         const { data: orderData, error: orderError } = await supabase
@@ -2201,12 +2159,12 @@ export default function EditarPedidoPage() {
   }
 
   function validateForm() {
-    if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
+    if (!form.customer_name.trim()) return 'Nome da cliente é obrigatório'
     if (orderItems.length === 0 && !form.product_name.trim()) {
       return 'Adicione pelo menos um produto ou mantenha um nome de pedido antigo'
     }
     if (finalTotal <= 0) return 'Total do pedido deve ser maior que zero'
-    if (downPayment < 0) return 'Valor do sinal nao pode ser negativo'
+    if (downPayment < 0) return 'Valor do sinal não pode ser negativo'
 
     const invalidItem = orderItems.some((item) => {
       if (!item.item_name.trim() || parseDecimal(item.quantity) <= 0 || parseDecimal(item.unit_price) < 0) {
@@ -2254,12 +2212,12 @@ export default function EditarPedidoPage() {
         (extra) => !extra.name.trim() || parseDecimal(extra.amount) < 0
       )
 
-      if (invalidExtra) return 'Confira nome e valor de todos os acrescimos'
+      if (invalidExtra) return 'Confira nome e valor de todos os acréscimos'
     }
 
     if (hasCakeTopperTable && cakeTopper.enabled) {
       if (parseDecimal(cakeTopper.cost) < 0 || parseDecimal(cakeTopper.charged_amount) < 0) {
-        return 'Custo e valor cobrado do topo de bolo nao podem ser negativos'
+        return 'Custo e valor cobrado do topo de bolo não podem ser negativos'
       }
     }
 
@@ -2329,7 +2287,7 @@ export default function EditarPedidoPage() {
     const primaryProductName =
       optionalText(form.product_name) ?? optionalText(orderItems[0]?.item_name ?? '') ?? null
     const paymentStatus = downPayment <= 0 ? 'pending' : remainingAmount > 0 ? 'partial' : 'paid'
-    const commonPayload: OrderUpdatePayload = {
+    const payload: OrderUpdatePayload = {
       customer_id: customerId,
       order_date: form.order_date || new Date().toISOString().split('T')[0],
       delivery_date: form.delivery_date || null,
@@ -2349,39 +2307,17 @@ export default function EditarPedidoPage() {
       delivery_address: optionalText(form.address),
       notes: optionalText(form.notes || form.description),
     }
-    const fullPayload: OrderUpdatePayload = {
-      ...commonPayload,
-      customer_name: form.customer_name.trim(),
-      customer_phone: optionalText(form.customer_phone),
-      product_name: primaryProductName,
-      description: optionalText(form.description),
-      payment_method: form.payment_method || null,
-      deposit_payment_date: form.deposit_payment_date || null,
-      remaining_payment_method: form.remaining_payment_method || null,
-      remaining_value: remainingAmount,
-      address: optionalText(form.address),
-    }
-    const withProductPayload: OrderUpdatePayload = {
-      ...commonPayload,
-      product_name: primaryProductName,
-      description: optionalText(form.description),
-    }
-    const minimalPayload: OrderUpdatePayload = commonPayload
 
-    for (const payload of [fullPayload, withProductPayload, minimalPayload]) {
-      const { error: updateError } = await supabase
-        .from('orders')
-        .update(payload)
-        .eq('id', orderId)
-        .eq('user_id', userId)
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update(payload)
+      .eq('id', orderId)
+      .eq('user_id', userId)
 
-      if (!updateError) return
+    if (updateError) {
       logEditError(updateError)
-
-      if (!isMissingColumnError(updateError)) throw updateError
+      throw updateError
     }
-
-    throw new Error('Nao foi possivel atualizar o pedido com os campos disponiveis')
   }
 
   async function insertOrderItem(payload: OrderItemInsert) {
@@ -2757,7 +2693,7 @@ export default function EditarPedidoPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada. Faca login novamente.')
+        throw new Error('Usuária não autenticada. Faça login novamente.')
       }
 
       const { data: existingOrder, error: existingOrderError } = await supabase
@@ -2774,7 +2710,7 @@ export default function EditarPedidoPage() {
 
       if (!existingOrder) {
         setNotFound(true)
-        throw new Error('Pedido nao encontrado para este usuario')
+        throw new Error('Pedido não encontrado para este usuário')
       }
 
       const customerId = await resolveCustomerId(user.id)
@@ -2807,7 +2743,7 @@ export default function EditarPedidoPage() {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#FAF6F0] px-4">
         <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6 text-center">
-          <p className="text-lg font-bold text-[#1A0A08]">Pedido nao encontrado</p>
+          <p className="text-lg font-bold text-[#1A0A08]">Pedido não encontrado</p>
           <p className="mt-1 text-sm text-[#999999]">
             Ele pode ter sido removido ou pertencer a outro usuario.
           </p>
@@ -2897,7 +2833,7 @@ export default function EditarPedidoPage() {
                 />
               </div>
               <div className="md:col-span-2">
-                <FieldLabel>Endereco de entrega</FieldLabel>
+                <FieldLabel>Endereço de entrega</FieldLabel>
                 <input
                   type="text"
                   name="address"
@@ -2982,7 +2918,7 @@ export default function EditarPedidoPage() {
           <Section title="Itens do pedido">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-[#999999]">
-                Subitens de kits entram com valor zero para nao duplicar o total.
+                Subitens de kits entram com valor zero para não duplicar o total.
               </p>
               <button
                 type="button"
@@ -3001,7 +2937,7 @@ export default function EditarPedidoPage() {
               </div>
             ) : orderItems.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[rgba(26,10,8,0.16)] p-5 text-center text-sm text-[#999999]">
-                Este pedido antigo ainda nao tem itens estruturados.
+                Este pedido antigo ainda não tem itens estruturados.
               </div>
             ) : (
               <div className="space-y-4">
@@ -3446,7 +3382,7 @@ export default function EditarPedidoPage() {
                                             event.target.value
                                           )
                                         }
-                                        placeholder="Observacoes"
+                                        placeholder="Observações"
                                         className={`${inputClass} mt-2`}
                                       />
                                       <div className="mt-3">
@@ -3679,7 +3615,7 @@ export default function EditarPedidoPage() {
                                                     event.target.value
                                                   )
                                                 }
-                                                placeholder="Observacoes"
+                                                placeholder="Observações"
                                                 className={`${inputClass} mt-2`}
                                               />
                                               <div className="mt-3">
@@ -3834,7 +3770,7 @@ export default function EditarPedidoPage() {
           <Section title="Topo de bolo">
             {!hasCakeTopperTable ? (
               <p className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
-                Tabela de topo de bolo nao encontrada neste ambiente.
+                Tabela de topo de bolo não encontrada neste ambiente.
               </p>
             ) : (
               <>
@@ -3903,13 +3839,11 @@ export default function EditarPedidoPage() {
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <FieldLabel>URL da foto</FieldLabel>
-                        <input
-                          type="text"
-                          name="photo_url"
+                        <FieldLabel>Foto do topo</FieldLabel>
+                        <ImageUpload
                           value={cakeTopper.photo_url}
-                          onChange={handleCakeTopperChange}
-                          className={inputClass}
+                          onUpload={(url) => setCakeTopper((prev) => ({ ...prev, photo_url: url }))}
+                          onRemove={() => setCakeTopper((prev) => ({ ...prev, photo_url: '' }))}
                         />
                       </div>
                       <div>
@@ -3937,7 +3871,7 @@ export default function EditarPedidoPage() {
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <FieldLabel>Observacoes</FieldLabel>
+                        <FieldLabel>Observações</FieldLabel>
                         <textarea
                           name="notes"
                           value={cakeTopper.notes}
@@ -3953,10 +3887,10 @@ export default function EditarPedidoPage() {
             )}
           </Section>
 
-          <Section title="Acrescimos">
+          <Section title="Acréscimos">
             {!hasOrderExtrasTable ? (
               <p className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
-                Tabela de acrescimos nao encontrada neste ambiente.
+                Tabela de acréscimos não encontrada neste ambiente.
               </p>
             ) : (
               <>
@@ -3971,7 +3905,7 @@ export default function EditarPedidoPage() {
                   </button>
                 </div>
                 {orderExtras.length === 0 ? (
-                  <p className="text-sm text-[#999999]">Sem acrescimos adicionados.</p>
+                  <p className="text-sm text-[#999999]">Sem acréscimos adicionados.</p>
                 ) : (
                   <div className="space-y-3">
                     {orderExtras.map((extra) => (
@@ -4012,7 +3946,7 @@ export default function EditarPedidoPage() {
                           onChange={(event) =>
                             updateOrderExtra(extra.localId, 'notes', event.target.value)
                           }
-                          placeholder="Observacoes"
+                          placeholder="Observações"
                           className={`${inputClass} md:col-span-3`}
                         />
                       </div>
@@ -4049,7 +3983,7 @@ export default function EditarPedidoPage() {
                   <p className="mt-1 font-bold text-[#1A0A08]">{formatCurrency(deliveryFee)}</p>
                 </div>
                 <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white p-3">
-                  <p className="text-sm text-[#999999]">Acrescimos</p>
+                  <p className="text-sm text-[#999999]">Acréscimos</p>
                   <p className="mt-1 font-bold text-[#1A0A08]">{formatCurrency(extrasTotal)}</p>
                 </div>
                 <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white p-3">
@@ -4160,7 +4094,7 @@ export default function EditarPedidoPage() {
             </div>
           </Section>
 
-          <Section title="Observacoes">
+          <Section title="Observações">
             <textarea
               name="notes"
               value={form.notes}

@@ -15,6 +15,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type ProductionStatus = 'pendente' | 'em_andamento' | 'concluido' | 'cancelado'
 type StatusFilter = 'todos' | ProductionStatus
@@ -195,17 +196,6 @@ function getRecurringOccurrenceTitle(occurrence: RecurringOrderOccurrence) {
 
   return `Mes ${occurrence.occurrence_number} - ${itemName}`
 }
-
-function logSupabaseError(context: string, error: SupabaseErrorDetails) {
-  console.error(context, {
-    message: error.message,
-    details: error.details,
-    hint: error.hint,
-    code: error.code,
-    fullError: error,
-  })
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message

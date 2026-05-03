@@ -5,6 +5,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { AlertTriangle, ArrowLeft, Package, Plus, Save, Trash2, Upload } from 'lucide-react'
+import {
+  createLocalId,
+  formatCurrency,
+  formatNumber,
+  optionalMoney,
+  optionalText,
+  parseDecimal,
+  parseInteger,
+  parseNumericValue,
+} from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
+import { ImageUpload } from '@/components/ui/ImageUpload'
 
 type NumericValue = number | string | null | undefined
 type ProductType = 'simples' | 'kit'
@@ -225,7 +237,7 @@ type OrderForm = {
 const statusOptions = [
   { id: 'novo', label: 'Novo' },
   { id: 'confirmado', label: 'Confirmado' },
-  { id: 'em_producao', label: 'Em producao' },
+  { id: 'em_producao', label: 'Em produção' },
   { id: 'pronto', label: 'Pronto' },
   { id: 'entregue', label: 'Entregue' },
   { id: 'cancelado', label: 'Cancelado' },
@@ -282,37 +294,6 @@ const initialRecurringForm: RecurringForm = {
   theme: '',
   notes: '',
 }
-
-function createLocalId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') return parseDecimal(value)
-  return 0
-}
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function optionalMoney(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue ? parseDecimal(trimmedValue) : null
-}
-
-function parseInteger(value: string) {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) ? parsed : 0
-}
-
 function formatDatePart(value: number) {
   return String(value).padStart(2, '0')
 }
@@ -330,20 +311,6 @@ function addMonthsToDateString(dateValue: string, monthOffset: number) {
 
   return `${targetYear}-${formatDatePart(normalizedMonthIndex + 1)}-${formatDatePart(targetDay)}`
 }
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
 function getEffectiveSalePrice(recipe: Recipe) {
   return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
 }
@@ -368,20 +335,6 @@ function calculateSupplierEstimatedCost(recipe: Recipe, quantity: number) {
 
   return null
 }
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function buildFlavorPayload(flavors: FlavorItem[]): FlavorPayload | null {
   const payload = flavors
     .map((flavor) => ({
@@ -441,7 +394,7 @@ export default function NovoPedidoPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuaria nao autenticada. Faca login para continuar.')
+          throw new Error('Usuária não autenticada. Faça login para continuar.')
         }
 
         const { data: recipesData, error: recipesError } = await supabase
@@ -1609,11 +1562,11 @@ export default function NovoPedidoPage() {
   }
 
   function validateForm() {
-    if (!form.customer_name.trim()) return 'Nome da cliente e obrigatorio'
-    if (!form.delivery_time) return 'Horario de entrega e obrigatorio'
+    if (!form.customer_name.trim()) return 'Nome da cliente é obrigatório'
+    if (!form.delivery_time) return 'Horário de entrega é obrigatório'
     if (orderItems.length === 0) return 'Adicione pelo menos um produto ao pedido'
     if (finalTotal <= 0) return 'Total do pedido deve ser maior que zero'
-    if (downPayment < 0) return 'Valor do sinal nao pode ser negativo'
+    if (downPayment < 0) return 'Valor do sinal não pode ser negativo'
 
     const invalidItem = orderItems.some((item) => {
       if (!item.recipe_id || parseDecimal(item.quantity) <= 0 || parseDecimal(item.unit_price) < 0) {
@@ -1660,12 +1613,12 @@ export default function NovoPedidoPage() {
     )
 
     if (invalidExtra) {
-      return 'Confira nome e valor de todos os acrescimos'
+      return 'Confira nome e valor de todos os acréscimos'
     }
 
     if (cakeTopper.enabled) {
       if (parseDecimal(cakeTopper.cost) < 0 || parseDecimal(cakeTopper.charged_amount) < 0) {
-        return 'Custo e valor cobrado do topo de bolo nao podem ser negativos'
+        return 'Custo e valor cobrado do topo de bolo não podem ser negativos'
       }
     }
 
@@ -1673,7 +1626,7 @@ export default function NovoPedidoPage() {
       const recurrenceCount = parseInteger(recurring.recurrence_count)
 
       if (recurrenceCount <= 0) {
-        return 'Informe a quantidade de meses/ocorrencias do mesversario'
+        return 'Informe a quantidade de meses/ocorrências do mesversário'
       }
 
       if (!recurring.first_occurrence_date) {
@@ -1851,7 +1804,7 @@ export default function NovoPedidoPage() {
     if (occurrencesError) {
       logSupabaseError('Erro Supabase recurring_order_occurrences insert:', occurrencesError)
       throw new Error(
-        'Falha ao gerar ocorrencias recorrentes. Verifique se a migration create_recurring_orders foi aplicada no Supabase.'
+        'Falha ao gerar ocorrências recorrentes. Verifique se a migration create_recurring_orders foi aplicada no Supabase.'
       )
     }
   }
@@ -1875,7 +1828,7 @@ export default function NovoPedidoPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada. Faca login novamente.')
+        throw new Error('Usuária não autenticada. Faça login novamente.')
       }
 
       const currentUserId = user.id
@@ -2313,7 +2266,7 @@ export default function NovoPedidoPage() {
               </div>
               <div className="md:col-span-2">
                 <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
-                  Endereco de entrega
+                  Endereço de entrega
                 </label>
                 <input
                   type="text"
@@ -2411,7 +2364,7 @@ export default function NovoPedidoPage() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
-                      Quantidade de meses/ocorrencias
+                      Quantidade de meses/ocorrências
                     </label>
                     <input
                       type="number"
@@ -2692,7 +2645,7 @@ export default function NovoPedidoPage() {
                           item.kit_category_subitems.length === 0 &&
                           item.kit_flexible_groups.length === 0 ? (
                             <p className="text-sm text-[#999999]">
-                              Este kit nao tem composicao cadastrada.
+                              Este kit não tem composição cadastrada.
                             </p>
                           ) : (
                             <>
@@ -3467,15 +3420,12 @@ export default function NovoPedidoPage() {
 
                   <div className="md:col-span-2">
                     <label className="mb-2 block text-sm font-medium text-[#1A0A08]">
-                      URL da foto
+                      Foto do topo
                     </label>
-                    <input
-                      type="text"
-                      name="photo_url"
+                    <ImageUpload
                       value={cakeTopper.photo_url}
-                      onChange={handleCakeTopperChange}
-                      placeholder="https://..."
-                      className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
+                      onUpload={(url) => setCakeTopper((prev) => ({ ...prev, photo_url: url }))}
+                      onRemove={() => setCakeTopper((prev) => ({ ...prev, photo_url: '' }))}
                     />
                   </div>
 
@@ -3531,7 +3481,7 @@ export default function NovoPedidoPage() {
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-bold text-[#1A0A08]">Acrescimos</h2>
+              <h2 className="font-bold text-[#1A0A08]">Acréscimos</h2>
               <button
                 type="button"
                 onClick={addOrderExtra}
@@ -3543,7 +3493,7 @@ export default function NovoPedidoPage() {
             </div>
 
             {orderExtras.length === 0 ? (
-              <p className="text-sm text-[#999999]">Sem acrescimos adicionados.</p>
+              <p className="text-sm text-[#999999]">Sem acréscimos adicionados.</p>
             ) : (
               <div className="space-y-3">
                 {orderExtras.map((extra) => (
@@ -3631,7 +3581,7 @@ export default function NovoPedidoPage() {
                 )}
 
                 <div>
-                  <p className="mb-2 text-sm font-medium text-[#1A0A08]">Acrescimos</p>
+                  <p className="mb-2 text-sm font-medium text-[#1A0A08]">Acréscimos</p>
                   <div className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08]">
                     {formatCurrency(extrasTotal)}
                   </div>
@@ -3823,7 +3773,7 @@ export default function NovoPedidoPage() {
           </section>
 
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
-            <label className="mb-2 block text-sm font-medium text-[#1A0A08]">Observacoes</label>
+            <label className="mb-2 block text-sm font-medium text-[#1A0A08]">Observações</label>
             <textarea
               name="notes"
               value={form.notes}

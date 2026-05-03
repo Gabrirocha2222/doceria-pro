@@ -14,6 +14,18 @@ import {
   Trash2,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  createLocalId,
+  formatCurrency,
+  formatNumber,
+  normalizeUnit,
+  optionalDecimal,
+  optionalText,
+  parseDecimal,
+  parseNumericValue,
+  toInputValue,
+} from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type ProductType = 'simple' | 'recipe' | 'kit' | 'outsourced'
 type ThirdPartyChoice = 'nao' | 'sim'
@@ -260,45 +272,6 @@ const initialForm: RecipeForm = {
   instructions: '',
   notes: '',
 }
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0
-  }
-
-  if (typeof value === 'string') {
-    return parseDecimal(value)
-  }
-
-  return 0
-}
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function optionalDecimal(value: string) {
-  const trimmedValue = value.trim()
-
-  if (!trimmedValue) return null
-
-  const parsed = Number(trimmedValue.replace(',', '.'))
-
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function toInputValue(value: NumericValue) {
-  if (value === null || value === undefined) return ''
-
-  return String(value)
-}
-
 function normalizeProductType(value: string): ProductType {
   if (value === 'kit' || value === 'Kit') return 'kit'
   if (value === 'recipe' || value === 'Receita') return 'recipe'
@@ -306,48 +279,9 @@ function normalizeProductType(value: string): ProductType {
 
   return 'simple'
 }
-
-function normalizeUnit(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
 function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
-function createLocalId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-  })
-}
-
 function calculateIngredientCost(item: RecipeIngredientItem, ingredient?: Ingredient) {
   if (!ingredient) return 0
 
@@ -447,6 +381,107 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
+  const [isQuickIngredientModalOpen, setIsQuickIngredientModalOpen] = useState(false)
+  const [quickIngredientTargetLocalId, setQuickIngredientTargetLocalId] = useState<string | null>(null)
+  const [quickIngredientLoading, setQuickIngredientLoading] = useState(false)
+  const [quickIngredientError, setQuickIngredientError] = useState('')
+  const [quickIngredientForm, setQuickIngredientForm] = useState({
+    name: '',
+    category: '',
+    purchase_unit: 'kg',
+    purchase_quantity: '',
+    purchase_price: '',
+    usage_unit: 'g',
+    stock_quantity: '',
+    supplier_id: ''
+  })
+
+  async function handleQuickSaveIngredient() {
+    setQuickIngredientError('')
+    
+    const { name, purchase_unit, purchase_quantity, purchase_price, usage_unit } = quickIngredientForm
+    
+    if (!name.trim()) return setQuickIngredientError('Nome é obrigatório.')
+    if (!purchase_unit.trim()) return setQuickIngredientError('Unidade de compra é obrigatória.')
+    if (!usage_unit.trim()) return setQuickIngredientError('Unidade de uso é obrigatória.')
+    
+    const pq = parseDecimal(purchase_quantity)
+    const pp = parseDecimal(purchase_price)
+    
+    if (pq <= 0) return setQuickIngredientError('Quantidade de compra deve ser maior que 0.')
+    if (pp < 0) return setQuickIngredientError('Preço não pode ser negativo.')
+    if (purchase_price === '') return setQuickIngredientError('Preço é obrigatório.')
+    
+    setQuickIngredientLoading(true)
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Usuário não autenticado')
+
+      const cost_per_unit = pp / pq
+      
+      const payload = {
+        user_id: user.id,
+        name: name.trim(),
+        category: optionalText(quickIngredientForm.category),
+        purchase_unit: purchase_unit.trim(),
+        purchase_quantity: pq,
+        purchase_price: pp,
+        usage_unit: usage_unit.trim(),
+        cost_per_unit,
+        package_quantity: pq,
+        package_cost: pp,
+        stock_quantity: parseDecimal(quickIngredientForm.stock_quantity) || 0,
+        stock_unit: usage_unit.trim(),
+        supplier_id: quickIngredientForm.supplier_id || null
+      }
+      
+      const { data, error } = await supabase.from('ingredients').insert([payload]).select('id, name, usage_unit, cost_per_unit').single()
+      
+      if (error) {
+        console.error('Erro ao criar ingrediente rápido:', {
+          message: error?.message,
+          details: error?.details,
+          hint: error?.hint,
+          code: error?.code,
+          fullError: error,
+          stringified: JSON.stringify(error, null, 2)
+        })
+        throw new Error('Falha ao salvar ingrediente no banco de dados.')
+      }
+      
+      if (data) {
+        setIngredients(prev => [...prev, data as Ingredient].sort((a, b) => a.name.localeCompare(b.name)))
+        
+        if (quickIngredientTargetLocalId) {
+          updateRecipeIngredient(quickIngredientTargetLocalId, 'ingredient_id', data.id)
+          const target = recipeIngredients.find(r => r.localId === quickIngredientTargetLocalId)
+          if (target && !target.unit) {
+             updateRecipeIngredient(quickIngredientTargetLocalId, 'unit', usage_unit.trim())
+          }
+        }
+      }
+      
+      setIsQuickIngredientModalOpen(false)
+      setQuickIngredientForm({
+        name: '',
+        category: '',
+        purchase_unit: 'kg',
+        purchase_quantity: '',
+        purchase_price: '',
+        usage_unit: 'g',
+        stock_quantity: '',
+        supplier_id: ''
+      })
+      alert('Ingrediente salvo com sucesso!')
+      
+    } catch (err) {
+       setQuickIngredientError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+       setQuickIngredientLoading(false)
+    }
+  }
+
   function handleCancel() {
     router.push('/receitas')
   }
@@ -460,7 +495,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
       try {
         if (isEditMode && !recipeId) {
-          throw new Error('Receita/produto nao encontrada')
+          throw new Error('Receita/produto não encontrada')
         }
 
         const {
@@ -537,7 +572,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
           }
 
           if (!recipeData) {
-            throw new Error('Receita/produto nao encontrada')
+            throw new Error('Receita/produto não encontrada')
           }
 
           loadedRecipe = recipeData as RecipeRecord
@@ -1180,7 +1215,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
   function validateForm() {
     if (!form.name.trim()) return 'Nome da receita é obrigatório'
-    if (!form.product_type) return 'Tipo de produto e obrigatorio'
+    if (!form.product_type) return 'Tipo de produto é obrigatório'
     if (yieldAmount <= 0) return 'Rendimento deve ser maior que zero'
     if (!form.yield_unit.trim()) return 'Unidade de rendimento é obrigatória'
     if (profitMargin < 0 || profitMargin >= 100) {
@@ -1320,7 +1355,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
       if (isEditMode) {
         if (!recipeId) {
-          throw new Error('Receita/produto nao encontrada')
+          throw new Error('Receita/produto não encontrada')
         }
 
         const { data: updatedRecipe, error: recipeError } = await supabase
@@ -1337,7 +1372,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
         }
 
         if (!updatedRecipe?.id) {
-          throw new Error('Receita/produto nao encontrada ou sem permissao para editar')
+          throw new Error('Receita/produto não encontrada ou sem permissão para editar')
         }
 
         savedRecipeId = updatedRecipe.id
@@ -1667,7 +1702,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
                     onChange={handleFormChange}
                     className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                   >
-                    <option value="nao">Nao</option>
+                    <option value="nao">Não</option>
                     <option value="sim">Sim</option>
                   </select>
                 </div>
@@ -1843,7 +1878,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
             <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5 lg:p-6">
               <div className="mb-5">
                 <div>
-                  <h2 className="text-lg font-bold text-[#1A0A08]">Composicao do kit</h2>
+                  <h2 className="text-lg font-bold text-[#1A0A08]">Composição do kit</h2>
                   <p className="mt-1 text-sm text-[#999999]">
                     Combine produtos fixos e categorias que serao escolhidas no pedido.
                   </p>
@@ -2388,8 +2423,19 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_120px_120px_140px] md:items-end">
                         <div>
-                          <label className="mb-2 block text-xs font-semibold text-[#1A0A08]">
-                            Ingrediente
+                          <label className="mb-2 flex items-center justify-between text-xs font-semibold text-[#1A0A08]">
+                            <span>Ingrediente</span>
+                            <button 
+                               type="button" 
+                               onClick={() => {
+                                 setQuickIngredientTargetLocalId(item.localId)
+                                 setQuickIngredientError('')
+                                 setIsQuickIngredientModalOpen(true)
+                               }}
+                               className="text-[#C0392B] hover:underline"
+                            >
+                              + Novo rapido
+                            </button>
                           </label>
                           <select
                             value={item.ingredient_id}
@@ -2780,6 +2826,136 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
           </div>
         </form>
       </main>
+
+      {isQuickIngredientModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="mb-4 text-lg font-bold text-[#1A0A08]">Novo ingrediente rapido</h3>
+            
+            {quickIngredientError && (
+              <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-[#C0392B]">
+                {quickIngredientError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Nome *</label>
+                <input 
+                  type="text" 
+                  value={quickIngredientForm.name}
+                  onChange={e => setQuickIngredientForm({...quickIngredientForm, name: e.target.value})}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+              
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Categoria</label>
+                <input 
+                  type="text" 
+                  value={quickIngredientForm.category}
+                  onChange={e => setQuickIngredientForm({...quickIngredientForm, category: e.target.value})}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Unidade de compra *</label>
+                  <input 
+                    type="text" 
+                    value={quickIngredientForm.purchase_unit}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, purchase_unit: e.target.value})}
+                    placeholder="Ex: kg"
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Qtd. de compra *</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    value={quickIngredientForm.purchase_quantity}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, purchase_quantity: e.target.value})}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Preco de compra *</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    value={quickIngredientForm.purchase_price}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, purchase_price: e.target.value})}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Unidade de uso *</label>
+                  <input 
+                    type="text" 
+                    value={quickIngredientForm.usage_unit}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, usage_unit: e.target.value})}
+                    placeholder="Ex: g"
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Estoque atual</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    value={quickIngredientForm.stock_quantity}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, stock_quantity: e.target.value})}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-[#1A0A08]">Fornecedor preferencial</label>
+                {suppliers.length > 0 ? (
+                  <select
+                    value={quickIngredientForm.supplier_id}
+                    onChange={e => setQuickIngredientForm({...quickIngredientForm, supplier_id: e.target.value})}
+                    className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 outline-none focus:ring-2 focus:ring-[#C0392B]"
+                  >
+                    <option value="">Selecione...</option>
+                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                ) : (
+                  <p className="mt-1 text-xs text-[#999999]">Voce pode vincular fornecedor depois.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsQuickIngredientModalOpen(false)}
+                className="rounded-lg px-4 py-2 font-semibold text-[#1A0A08] hover:bg-[#FAF6F0]"
+                disabled={quickIngredientLoading}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleQuickSaveIngredient}
+                disabled={quickIngredientLoading}
+                className="rounded-lg bg-[#C0392B] px-4 py-2 font-semibold text-white hover:bg-[#A0301F] disabled:opacity-60"
+              >
+                {quickIngredientLoading ? 'Salvando...' : 'Salvar ingrediente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

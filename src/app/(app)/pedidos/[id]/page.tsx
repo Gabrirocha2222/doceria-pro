@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { ArrowLeft, CheckCircle, Clock, DollarSign, Edit3, Package, Trash2 } from 'lucide-react'
+import { formatCurrency, formatNumber, parseNumericValue } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 
@@ -77,10 +79,10 @@ type Order = {
   total_value: NumericValue
   deposit_value: NumericValue
   down_payment?: NumericValue
-  remaining_value?: NumericValue
+  remaining_amount?: NumericValue
   status: string
+  payment_status?: string | null
   payment_method?: string | null
-  address?: string | null
   delivery_address?: string | null
   notes: string | null
   image_paths?: string[]
@@ -108,7 +110,7 @@ type Order = {
 const statusOptions = [
   { id: 'novo', label: 'Novo', color: '#3498DB' },
   { id: 'confirmado', label: 'Confirmado', color: '#2980B9' },
-  { id: 'em_producao', label: 'Em producao', color: '#F39C12' },
+  { id: 'em_producao', label: 'Em produção', color: '#F39C12' },
   { id: 'pronto', label: 'Pronto', color: '#27AE60' },
   { id: 'entregue', label: 'Entregue', color: '#7F8C8D' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B' },
@@ -121,33 +123,10 @@ const recurringStatusOptions: {
   bg: string
 }[] = [
   { id: 'pendente', label: 'Pendente', color: '#9A7320', bg: '#FFF6D8' },
-  { id: 'em_producao', label: 'Em producao', color: '#F39C12', bg: '#FFF2DD' },
+  { id: 'em_producao', label: 'Em produção', color: '#F39C12', bg: '#FFF2DD' },
   { id: 'entregue', label: 'Entregue', color: '#17803D', bg: '#EAF8EF' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B', bg: '#FDECEA' },
 ]
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function getStatusColor(status: string) {
   const option = statusOptions.find((statusOption) => statusOption.id === status)
   return option?.color || '#999999'
@@ -161,20 +140,6 @@ function getStatusLabel(status: string) {
 function getRecurringStatusMeta(status: RecurringOccurrenceStatus) {
   return recurringStatusOptions.find((option) => option.id === status) ?? recurringStatusOptions[0]
 }
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
 function formatDate(date: string) {
   if (!date) return 'Sem data'
 
@@ -216,7 +181,7 @@ function renderFlavors(flavors: FlavorDetail[] | null) {
       <div className="space-y-1">
         {flavors.map((flavor, index) => (
           <div key={`${flavor.name}-${index}`} className="flex justify-between gap-3 text-sm">
-            <span className="text-[#1A0A08]">{flavor.name || 'Sabor nao informado'}</span>
+            <span className="text-[#1A0A08]">{flavor.name || 'Sabor não informado'}</span>
             <span className="font-semibold text-[#1A0A08]">{formatNumber(flavor.quantity)}</span>
           </div>
         ))}
@@ -274,7 +239,7 @@ export default function DetalhesPedidoPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada')
+        throw new Error('Usuária não autenticada')
       }
 
       const { data, error: orderError } = await supabase
@@ -382,23 +347,119 @@ export default function DetalhesPedidoPage() {
     if (!order) return
 
     setIsUpdating(true)
+    setError('')
     try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) throw new Error('Usuária não autenticada')
+
+      let updatePayload: Partial<Order> = { status: newStatus }
+
+      const totalValue = parseNumericValue(order.total_value)
+      const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+      const remainingValue =
+        order.remaining_amount == null
+          ? Math.max(totalValue - depositValue, 0)
+          : parseNumericValue(order.remaining_amount)
+
+      if (newStatus === 'entregue' && remainingValue > 0) {
+        if (confirm(`Este pedido ainda tem ${formatCurrency(remainingValue)} em aberto. Deseja marcar o restante como recebido também?`)) {
+          updatePayload = {
+            ...updatePayload,
+            remaining_amount: 0,
+            payment_status: 'pago',
+            remaining_payment_date: new Date().toISOString().split('T')[0],
+          }
+        }
+      }
+
       const { error: updateError } = await supabase
         .from('orders')
-        .update({ status: newStatus })
+        .update(updatePayload)
         .eq('id', orderId)
+        .eq('user_id', user.id)
 
       if (updateError) {
-        logSupabaseError('Erro Supabase orders status update:', updateError)
+        console.error('Erro Supabase orders status update:', {
+          message: updateError?.message,
+          details: updateError?.details,
+          hint: updateError?.hint,
+          code: updateError?.code,
+          fullError: updateError,
+          stringified: JSON.stringify(updateError, null, 2)
+        })
         throw updateError
       }
 
       setOrder((currentOrder) =>
-        currentOrder ? { ...currentOrder, status: newStatus } : currentOrder
+        currentOrder ? { ...currentOrder, ...updatePayload } : currentOrder
       )
     } catch (err) {
       console.error('Erro ao atualizar status:', err)
       setError('Falha ao atualizar status')
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+
+  async function receiveRemainingPayment() {
+    if (!order) return
+
+    const totalValue = parseNumericValue(order.total_value)
+    const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+    const remainingValue =
+      order.remaining_amount == null
+        ? Math.max(totalValue - depositValue, 0)
+        : parseNumericValue(order.remaining_amount)
+
+    if (remainingValue <= 0) return
+
+    if (!confirm(`Confirmar recebimento do restante de ${formatCurrency(remainingValue)}?`)) return
+
+    setIsUpdating(true)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) throw new Error('Usuária não autenticada')
+
+      const updatePayload = {
+        remaining_amount: 0,
+        payment_status: 'pago',
+        remaining_payment_date: new Date().toISOString().split('T')[0],
+      }
+
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', orderId)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        console.error('Erro Supabase receiveRemainingPayment:', {
+          message: updateError?.message,
+          details: updateError?.details,
+          hint: updateError?.hint,
+          code: updateError?.code,
+          fullError: updateError,
+          stringified: JSON.stringify(updateError, null, 2)
+        })
+        throw updateError
+      }
+
+      setOrder((currentOrder) =>
+        currentOrder ? { ...currentOrder, ...updatePayload } : currentOrder
+      )
+    } catch (err) {
+      console.error('Erro ao receber restante:', err)
+      setError('Falha ao receber restante')
     } finally {
       setIsUpdating(false)
     }
@@ -440,15 +501,15 @@ export default function DetalhesPedidoPage() {
           : currentOrder
       )
     } catch (err) {
-      console.error('Erro ao atualizar ocorrencia recorrente:', err)
-      setError('Falha ao atualizar ocorrencia recorrente')
+      console.error('Erro ao atualizar ocorrência recorrente:', err)
+      setError('Falha ao atualizar ocorrência recorrente')
     } finally {
       setUpdatingOccurrenceId('')
     }
   }
 
   async function deleteOrder() {
-    if (!confirm('Tem certeza que deseja excluir este pedido? Esta acao nao pode ser desfeita.')) {
+    if (!confirm('Tem certeza que deseja excluir este pedido? Esta ação não pode ser desfeita.')) {
       return
     }
 
@@ -482,7 +543,7 @@ export default function DetalhesPedidoPage() {
     return (
       <div className="flex h-screen w-full items-center justify-center">
         <div className="text-center">
-          <p className="text-lg font-medium text-[#1A0A08]">Pedido nao encontrado</p>
+          <p className="text-lg font-medium text-[#1A0A08]">Pedido não encontrado</p>
           <button
             type="button"
             onClick={() => router.push('/pedidos')}
@@ -495,16 +556,16 @@ export default function DetalhesPedidoPage() {
     )
   }
 
-  const customerName = order.customers?.name || order.customer_name || 'Cliente nao informado'
-  const customerPhone = order.customers?.phone || order.customer_phone
+  const customerName = order.customers?.name || 'Cliente não informado'
+  const customerPhone = order.customers?.phone
   const orderTitle = mainItems.length > 0 ? mainItems[0].item_name : order.product_name
-  const address = order.delivery_address || order.address
+  const address = order.delivery_address
   const totalValue = parseNumericValue(order.total_value)
-  const depositValue = parseNumericValue(order.deposit_value)
+  const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
   const remainingValue =
-    order.remaining_value == null
+    order.remaining_amount == null
       ? Math.max(totalValue - depositValue, 0)
-      : parseNumericValue(order.remaining_value)
+      : parseNumericValue(order.remaining_amount)
   const deliveredRecurringCount = recurringOccurrences.filter(
     (occurrence) => occurrence.status === 'entregue'
   ).length
@@ -531,20 +592,36 @@ export default function DetalhesPedidoPage() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {remainingValue > 0 && (
+              <button
+                type="button"
+                disabled={isUpdating}
+                onClick={receiveRemainingPayment}
+                className="hidden sm:inline-flex items-center gap-2 rounded-lg bg-[#27AE60] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1E8449] disabled:opacity-50"
+              >
+                Receber restante
+              </button>
+            )}
             <Link
               href={`/pedidos/${order.id}/editar`}
-              className="inline-flex items-center gap-2 rounded-lg bg-[#C0392B] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#A0301F]"
+              className="inline-flex items-center gap-2 rounded-lg bg-[#FAF6F0] border border-[rgba(26,10,8,0.07)] px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-white"
             >
               <Edit3 size={16} aria-hidden="true" />
-              <span className="hidden sm:inline">Editar pedido</span>
-              <span className="sm:hidden">Editar</span>
+              <span className="hidden sm:inline">Editar</span>
             </Link>
-            <div
-              className="rounded-full px-4 py-2 text-sm font-semibold text-white"
+            <select
+              value={order.status}
+              onChange={(e) => updateStatus(e.target.value)}
+              disabled={isUpdating}
+              className="rounded-lg border border-[rgba(26,10,8,0.07)] px-3 py-2 text-sm font-semibold text-white transition-colors focus:outline-none focus:ring-2 focus:ring-white/50 disabled:opacity-50"
               style={{ backgroundColor: getStatusColor(order.status) }}
             >
-              {getStatusLabel(order.status)}
-            </div>
+              {statusOptions.map((option) => (
+                <option key={option.id} value={option.id} className="bg-white text-[#1A0A08]">
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       </div>
@@ -589,7 +666,7 @@ export default function DetalhesPedidoPage() {
             </div>
             {address && (
               <div className="md:col-span-2">
-                <p className="mb-1 text-sm text-[#999999]">Endereco</p>
+                <p className="mb-1 text-sm text-[#999999]">Endereço</p>
                 <p className="font-medium text-[#1A0A08]">{address}</p>
               </div>
             )}
@@ -717,7 +794,7 @@ export default function DetalhesPedidoPage() {
 
             {recurringOccurrences.length === 0 ? (
               <div className="rounded-lg bg-[#FAF6F0] p-4 text-sm text-[#999999]">
-                Nenhuma ocorrencia recorrente foi gerada para este pedido.
+                Nenhuma ocorrência recorrente foi gerada para este pedido.
               </div>
             ) : (
               <div className="space-y-3">
@@ -844,17 +921,31 @@ export default function DetalhesPedidoPage() {
                             : formatCurrency(cakeTopper.charged_amount)}
                         </p>
                       </div>
-                      {cakeTopper.photo_url && (
-                        <div className="md:col-span-2">
-                          <p className="mb-1 text-sm text-[#999999]">URL da foto</p>
-                          <p className="break-all font-medium text-[#1A0A08]">
-                            {cakeTopper.photo_url}
-                          </p>
-                        </div>
-                      )}
+                      <div className="md:col-span-2">
+                        <p className="mb-2 text-sm text-[#999999]">Foto do topo</p>
+                        {cakeTopper.photo_url ? (
+                          <div className="flex flex-col items-start gap-2">
+                            <img
+                              src={cakeTopper.photo_url}
+                              alt="Foto de referência do topo de bolo"
+                              className="w-full max-w-sm max-h-[280px] object-contain rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white"
+                            />
+                            <a
+                              href={cakeTopper.photo_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-sm font-medium text-[#C0392B] hover:underline"
+                            >
+                              Abrir imagem
+                            </a>
+                          </div>
+                        ) : (
+                          <p className="font-medium text-[#1A0A08]">Nenhuma foto enviada</p>
+                        )}
+                      </div>
                       {cakeTopper.notes && (
                         <div className="md:col-span-2">
-                          <p className="mb-1 text-sm text-[#999999]">Observacoes</p>
+                          <p className="mb-1 text-sm text-[#999999]">Observações</p>
                           <p className="whitespace-pre-wrap text-[#1A0A08]">
                             {cakeTopper.notes}
                           </p>
@@ -892,16 +983,33 @@ export default function DetalhesPedidoPage() {
               <div className="rounded-lg border border-[#C9A84C] p-4">
                 <p className="mb-1 text-sm text-[#999999]">Sinal pago</p>
                 <p className="font-bold text-[#C9A84C]">
-                  {formatCurrency(
-                    parseNumericValue(order.down_payment ?? order.deposit_value)
-                  )}
+                  {formatCurrency(depositValue)}
                 </p>
               </div>
-              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
-                <p className="mb-1 text-sm text-[#999999]">Restante</p>
-                <p className="font-bold text-[#1A0A08]">{formatCurrency(remainingValue)}</p>
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4 flex flex-col justify-between items-start gap-2">
+                <div>
+                  <p className="mb-1 text-sm text-[#999999]">Restante</p>
+                  <p className="font-bold text-[#1A0A08]">{formatCurrency(remainingValue)}</p>
+                </div>
+                {remainingValue > 0 && (
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={receiveRemainingPayment}
+                    className="w-fit rounded-lg bg-[#27AE60] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1E8449] disabled:opacity-50"
+                  >
+                    Receber restante
+                  </button>
+                )}
               </div>
             </div>
+
+            {order.payment_status && (
+              <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
+                <p className="mb-1 text-sm text-[#999999]">Status do pagamento</p>
+                <p className="font-bold text-[#1A0A08] capitalize">{order.payment_status}</p>
+              </div>
+            )}
 
             {order.remaining_payment_date && (
               <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
@@ -930,7 +1038,7 @@ export default function DetalhesPedidoPage() {
 
             {order.extras_total && parseNumericValue(order.extras_total) > 0 && (
               <div className="rounded-lg border border-[rgba(26,10,8,0.07)] p-4">
-                <p className="mb-1 text-sm text-[#999999]">Acrescimos</p>
+                <p className="mb-1 text-sm text-[#999999]">Acréscimos</p>
                 <p className="font-bold text-[#1A0A08]">
                   +{formatCurrency(order.extras_total)}
                 </p>
@@ -970,7 +1078,7 @@ export default function DetalhesPedidoPage() {
 
         {order.notes && mainItems.length > 0 && (
           <section className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-6">
-            <h2 className="mb-3 font-bold text-[#1A0A08]">Observacoes</h2>
+            <h2 className="mb-3 font-bold text-[#1A0A08]">Observações</h2>
             <p className="whitespace-pre-wrap text-[#1A0A08]">{order.notes}</p>
           </section>
         )}

@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, CalendarDays, PackageCheck } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { formatCurrency, formatNumber } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type SupplierOrderStatus = 'pendente' | 'encomendado' | 'recebido' | 'cancelado'
@@ -73,42 +75,6 @@ const statusOptions: { id: SupplierOrderStatus; label: string }[] = [
   { id: 'recebido', label: 'Recebido' },
   { id: 'cancelado', label: 'Cancelado' },
 ]
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
 function formatDate(date: string | null) {
   if (!date) return 'Sem data'
 
@@ -222,7 +188,7 @@ export default function DetalhePedidoFornecedorPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada')
+        throw new Error('Usuária não autenticada')
       }
 
       const { data, error: supplierOrderError } = await supabase
@@ -346,7 +312,7 @@ export default function DetalhePedidoFornecedorPage() {
       <div className="flex h-screen w-full items-center justify-center">
         <div className="text-center">
           <p className="text-lg font-medium text-[#1A0A08]">
-            Pedido para fornecedor nao encontrado
+            Pedido para fornecedor não encontrado
           </p>
           <button
             type="button"
@@ -403,7 +369,7 @@ export default function DetalhePedidoFornecedorPage() {
                 <h2 className="text-lg font-bold text-[#1A0A08]">{supplierOrder.title}</h2>
               </div>
               <p className="text-sm text-[#999999]">
-                {supplier?.name || 'Fornecedor nao definido'}
+                {supplier?.name || 'Fornecedor não definido'}
               </p>
             </div>
             <span
@@ -496,7 +462,7 @@ export default function DetalhePedidoFornecedorPage() {
                 {flavors.map((flavor, index) => (
                   <div key={`${flavor.name}-${index}`} className="flex justify-between gap-3">
                     <span className="text-[#1A0A08]">
-                      {flavor.name || 'Sabor nao informado'}
+                      {flavor.name || 'Sabor não informado'}
                     </span>
                     <span className="font-semibold text-[#1A0A08]">
                       {formatNumber(flavor.quantity)}
@@ -537,14 +503,28 @@ export default function DetalhePedidoFornecedorPage() {
                       : formatCurrency(cakeTopperDetails.cost)}
                   </p>
                 </div>
-                {cakeTopperDetails.photoUrl && (
-                  <div className="md:col-span-2">
-                    <p className="text-xs text-[#999999]">URL da foto</p>
-                    <p className="break-all font-semibold text-[#1A0A08]">
-                      {cakeTopperDetails.photoUrl}
-                    </p>
-                  </div>
-                )}
+                <div className="md:col-span-2">
+                  <p className="mb-2 text-xs text-[#999999]">Foto do topo</p>
+                  {cakeTopperDetails.photoUrl ? (
+                    <div className="flex flex-col items-start gap-2">
+                      <img
+                        src={cakeTopperDetails.photoUrl}
+                        alt="Foto de referência do topo de bolo"
+                        className="w-full max-h-[320px] object-contain rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white"
+                      />
+                      <a
+                        href={cakeTopperDetails.photoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs font-medium text-[#C0392B] hover:underline"
+                      >
+                        Abrir imagem
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="font-semibold text-[#1A0A08]">Nenhuma foto enviada</p>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -555,7 +535,7 @@ export default function DetalhePedidoFornecedorPage() {
 
           {supplierOrder.notes && (
             <div className="mt-4 rounded-lg bg-[#FAF6F0] p-4">
-              <p className="mb-1 text-xs font-semibold text-[#999999]">Observacoes</p>
+              <p className="mb-1 text-xs font-semibold text-[#999999]">Observações</p>
               <p className="whitespace-pre-wrap text-[#1A0A08]">{supplierOrder.notes}</p>
             </div>
           )}

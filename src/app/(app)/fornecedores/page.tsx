@@ -17,6 +17,8 @@ import {
   X,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { optionalText } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type SupabaseErrorLike = {
   message?: string
@@ -56,25 +58,6 @@ function getWhatsAppHref(whatsapp: string | null) {
 
   return `https://wa.me/${digits}`
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function buildEditForm(supplier: Supplier): SupplierEditForm {
   return {
     name: supplier.name,
@@ -175,7 +158,7 @@ export default function FornecedoresPage() {
     if (!editForm) return
 
     if (!editForm.name.trim()) {
-      setError('Nome do fornecedor e obrigatorio')
+      setError('Nome do fornecedor é obrigatório')
       return
     }
 
@@ -189,7 +172,7 @@ export default function FornecedoresPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const updatedSupplier = {
@@ -404,14 +387,14 @@ export default function FornecedoresPage() {
                         type="text"
                         value={currentEditForm.address}
                         onChange={(event) => updateEditForm('address', event.target.value)}
-                        placeholder="Endereco"
+                        placeholder="Endereço"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                       <input
                         type="text"
                         value={currentEditForm.notes}
                         onChange={(event) => updateEditForm('notes', event.target.value)}
-                        placeholder="Observacoes"
+                        placeholder="Observações"
                         className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
                       />
                     </div>

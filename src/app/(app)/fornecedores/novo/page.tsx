@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { optionalText } from '@/lib/format'
 
 type SupplierForm = {
   name: string
@@ -21,12 +22,6 @@ const initialForm: SupplierForm = {
   address: '',
   notes: '',
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
 export default function NovoFornecedorPage() {
   const [form, setForm] = useState<SupplierForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)

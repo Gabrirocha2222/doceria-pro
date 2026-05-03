@@ -5,6 +5,8 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { optionalText } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type EntryForm = {
   description: string
@@ -40,22 +42,6 @@ function parseAmount(value: string) {
 function isDateInputValue(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function logSupabaseError(context: string, error: SupabaseErrorDetails) {
-  console.error(context, {
-    message: error.message,
-    details: error.details,
-    hint: error.hint,
-    code: error.code,
-    fullError: error,
-  })
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message

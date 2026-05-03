@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CalendarDays, PackageCheck, Search } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { formatCurrency, formatNumber } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type SupplierOrderStatus = 'pendente' | 'encomendado' | 'recebido' | 'cancelado'
@@ -78,42 +80,6 @@ const actionStatuses: { id: SupplierOrderStatus; label: string }[] = [
   { id: 'recebido', label: 'Recebido' },
   { id: 'cancelado', label: 'Cancelado' },
 ]
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
-function formatNumber(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 2,
-  }).format(parseNumericValue(value))
-}
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
 function formatDate(date: string | null) {
   if (!date) return 'Sem data'
 
@@ -221,7 +187,7 @@ export default function PedidosFornecedoresPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada')
+        throw new Error('Usuária não autenticada')
       }
 
       const { data, error: supplierOrdersError } = await supabase
@@ -312,6 +278,16 @@ export default function PedidosFornecedoresPage() {
 
     return () => window.clearTimeout(timeoutId)
   }, [loadSupplierOrders])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const statusParam = params.get('status')
+      if (statusParam && ['pendente', 'encomendado', 'recebido', 'cancelado'].includes(statusParam)) {
+        setSelectedStatus(statusParam as SupplierOrderStatus)
+      }
+    }
+  }, [])
 
   const supplierOptions = useMemo(() => {
     return Object.values(suppliersById).sort((a, b) => a.name.localeCompare(b.name))
@@ -506,7 +482,7 @@ export default function PedidosFornecedoresPage() {
                   <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
-                        {supplier?.name || 'Fornecedor nao definido'}
+                        {supplier?.name || 'Fornecedor não definido'}
                       </p>
                       <h2 className="mt-1 text-lg font-bold text-[#1A0A08]">{order.title}</h2>
                     </div>
@@ -566,7 +542,7 @@ export default function PedidosFornecedoresPage() {
                             className="flex justify-between gap-3 text-sm"
                           >
                             <span className="text-[#1A0A08]">
-                              {flavor.name || 'Sabor nao informado'}
+                              {flavor.name || 'Sabor não informado'}
                             </span>
                             <span className="font-semibold text-[#1A0A08]">
                               {formatNumber(flavor.quantity)}
@@ -609,14 +585,28 @@ export default function PedidosFornecedoresPage() {
                               : formatCurrency(cakeTopperDetails.cost)}
                           </p>
                         </div>
-                        {cakeTopperDetails.photoUrl && (
-                          <div className="sm:col-span-2">
-                            <p className="text-xs text-[#999999]">URL da foto</p>
-                            <p className="break-all font-semibold text-[#1A0A08]">
-                              {cakeTopperDetails.photoUrl}
-                            </p>
-                          </div>
-                        )}
+                        <div className="sm:col-span-2">
+                          <p className="mb-2 text-xs text-[#999999]">Foto do topo</p>
+                          {cakeTopperDetails.photoUrl ? (
+                            <div className="flex flex-col items-start gap-2">
+                              <img
+                                src={cakeTopperDetails.photoUrl}
+                                alt="Foto de referência do topo de bolo"
+                                className="w-full max-h-[220px] object-contain rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white"
+                              />
+                              <a
+                                href={cakeTopperDetails.photoUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs font-medium text-[#C0392B] hover:underline"
+                              >
+                                Abrir imagem
+                              </a>
+                            </div>
+                          ) : (
+                            <p className="font-semibold text-[#1A0A08]">Nenhuma foto enviada</p>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}

@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Edit3, Package, Plus, Search, Trash2 } from 'lucide-react'
+import { formatCurrency, parseNumericValue } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
+import { Pagination, paginate } from '@/components/Pagination'
 
 type NumericValue = number | string | null | undefined
 
@@ -38,8 +41,10 @@ type Order = {
   total_value: NumericValue
   deposit_value: NumericValue
   down_payment: NumericValue
-  remaining_value: NumericValue
+  remaining_amount: NumericValue
+  remaining_payment_date?: string | null
   status: string
+  payment_status?: string | null
   created_at: string
   notes?: string | null
   fulfillment_type?: string | null
@@ -58,41 +63,11 @@ const statusOptions = [
   { id: 'todos', label: 'Todos', color: '#1A0A08' },
   { id: 'novo', label: 'Novo', color: '#3498DB' },
   { id: 'confirmado', label: 'Confirmado', color: '#2980B9' },
-  { id: 'em_producao', label: 'Em producao', color: '#F39C12' },
+  { id: 'em_producao', label: 'Em produção', color: '#F39C12' },
   { id: 'pronto', label: 'Pronto', color: '#27AE60' },
   { id: 'entregue', label: 'Entregue', color: '#7F8C8D' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B' },
 ]
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
 function formatDate(date: string) {
   if (!date) return 'Sem data'
 
@@ -142,7 +117,9 @@ export default function PedidosPage() {
   const [selectedStatus, setSelectedStatus] = useState('todos')
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const supabase = useMemo(() => createClient(), [])
 
   const loadOrders = useCallback(async () => {
@@ -156,13 +133,26 @@ export default function PedidosPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuaria nao autenticada')
+        throw new Error('Usuária não autenticada')
       }
 
       const { data, error: ordersError } = await supabase
         .from('orders')
         .select(`
-          *,
+          id,
+          status,
+          payment_status,
+          created_at,
+          delivery_date,
+          delivery_time,
+          total_value,
+          down_payment,
+          deposit_value,
+          remaining_amount,
+          remaining_payment_date,
+          fulfillment_type,
+          is_recurring,
+          recurrence_count,
           customers (
             id,
             name,
@@ -208,6 +198,8 @@ export default function PedidosPage() {
     return () => window.clearTimeout(timeoutId)
   }, [loadOrders])
 
+  useEffect(() => { setCurrentPage(1) }, [selectedStatus, searchQuery])
+
   const filteredOrders = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -228,6 +220,8 @@ export default function PedidosPage() {
     })
   }, [orders, searchQuery, selectedStatus])
 
+  const { paged: pagedOrders, totalPages } = paginate(filteredOrders, currentPage)
+
   async function deleteOrder(id: string) {
     if (!confirm('Tem certeza que deseja excluir este pedido?')) return
 
@@ -243,6 +237,129 @@ export default function PedidosPage() {
     } catch (err) {
       console.error('Erro ao deletar:', err)
       setError('Falha ao deletar pedido')
+    }
+  }
+
+  async function updateOrderStatus(orderId: string, nextStatus: string) {
+    const order = orders.find((o) => o.id === orderId)
+    if (!order) return
+
+    setUpdatingOrderId(orderId)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) throw new Error('Usuária não autenticada')
+
+      let updatePayload: Partial<Order> = { status: nextStatus }
+      
+      const totalValue = parseNumericValue(order.total_value)
+      const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+      const remainingValue = order.remaining_amount == null
+        ? Math.max(totalValue - depositValue, 0)
+        : parseNumericValue(order.remaining_amount)
+
+      if (nextStatus === 'entregue' && remainingValue > 0) {
+        if (confirm(`Este pedido ainda tem ${formatCurrency(remainingValue)} em aberto. Deseja marcar o restante como recebido também?`)) {
+          updatePayload = {
+            ...updatePayload,
+            remaining_amount: 0,
+            payment_status: 'pago',
+            remaining_payment_date: new Date().toISOString().split('T')[0],
+          }
+        }
+      }
+
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', orderId)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        console.error('Erro Supabase orders update:', {
+          message: updateError?.message,
+          details: updateError?.details,
+          hint: updateError?.hint,
+          code: updateError?.code,
+          fullError: updateError,
+          stringified: JSON.stringify(updateError, null, 2)
+        })
+        throw updateError
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((o) => (o.id === orderId ? { ...o, ...updatePayload } : o))
+      )
+    } catch (err) {
+      console.error('Erro ao atualizar status:', err)
+      setError('Falha ao atualizar status')
+    } finally {
+      setUpdatingOrderId(null)
+    }
+  }
+
+  async function receiveRemainingPayment(orderId: string) {
+    const order = orders.find((o) => o.id === orderId)
+    if (!order) return
+
+    const totalValue = parseNumericValue(order.total_value)
+    const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+    const remainingValue = order.remaining_amount == null
+      ? Math.max(totalValue - depositValue, 0)
+      : parseNumericValue(order.remaining_amount)
+
+    if (remainingValue <= 0) return
+
+    if (!confirm(`Confirmar recebimento do restante de ${formatCurrency(remainingValue)}?`)) return
+
+    setUpdatingOrderId(orderId)
+    setError('')
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) throw new Error('Usuária não autenticada')
+
+      const updatePayload = {
+        remaining_amount: 0,
+        payment_status: 'pago',
+        remaining_payment_date: new Date().toISOString().split('T')[0],
+      }
+
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', orderId)
+        .eq('user_id', user.id)
+
+      if (updateError) {
+        console.error('Erro Supabase orders update:', {
+          message: updateError?.message,
+          details: updateError?.details,
+          hint: updateError?.hint,
+          code: updateError?.code,
+          fullError: updateError,
+          stringified: JSON.stringify(updateError, null, 2)
+        })
+        throw updateError
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((o) => (o.id === orderId ? { ...o, ...updatePayload } : o))
+      )
+    } catch (err) {
+      console.error('Erro ao receber restante:', err)
+      setError('Falha ao receber restante')
+    } finally {
+      setUpdatingOrderId(null)
     }
   }
 
@@ -314,7 +431,7 @@ export default function PedidosPage() {
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-b-2 border-[#C0392B]" />
             <p className="mt-2 text-[#999999]">Carregando pedidos...</p>
           </div>
-        ) : filteredOrders.length === 0 ? (
+        ) : pagedOrders.length === 0 && filteredOrders.length === 0 ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white py-12 text-center">
             <p className="text-lg font-medium text-[#1A0A08]">Nenhum pedido encontrado</p>
             <p className="mt-1 text-sm text-[#999999]">
@@ -332,11 +449,18 @@ export default function PedidosPage() {
             )}
           </div>
         ) : (
+          <>
           <div className="space-y-3">
-            {filteredOrders.map((order) => {
+            {pagedOrders.map((order) => {
               const mainItems = getMainItems(order)
               const hasStructuredItems = mainItems.length > 0
               const recurringProgress = getRecurringProgress(order)
+              const isUpdating = updatingOrderId === order.id
+              const totalValue = parseNumericValue(order.total_value)
+              const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+              const remainingValue = order.remaining_amount == null
+                ? Math.max(totalValue - depositValue, 0)
+                : parseNumericValue(order.remaining_amount)
 
               return (
                 <article
@@ -359,7 +483,7 @@ export default function PedidosPage() {
 
                       <div className="min-w-0">
                         <p className="font-semibold text-[#1A0A08]">
-                          {order.customers?.name || 'Cliente nao informado'}
+                          {order.customers?.name || 'Cliente não informado'}
                         </p>
                         <p className="truncate text-sm text-[#999999]">{getOrderSummary(order)}</p>
                         <p className="mt-1 text-xs text-[#999999]">
@@ -383,27 +507,32 @@ export default function PedidosPage() {
                       </div>
                     </div>
 
-                      <div className="flex items-center justify-between gap-3 md:flex-shrink-0">
+                      <div className="flex flex-wrap items-center justify-between gap-3 md:flex-shrink-0">
                       <div className="text-right">
                         <p className="font-bold text-[#1A0A08]">
-                          {formatCurrency(order.total_value)}
+                          {formatCurrency(totalValue)}
                         </p>
-                        {order.down_payment ? (
+                        {depositValue > 0 ? (
                           <>
                             <p className="text-xs text-[#C9A84C]">
-                              {formatCurrency(order.down_payment)} sinal
+                              {formatCurrency(depositValue)} sinal
                             </p>
                             <p className="text-xs text-[#999999]">
-                              {formatCurrency(
-                                Math.max(parseNumericValue(order.total_value) - parseNumericValue(order.down_payment), 0)
-                              )}{' '}
-                              restante
+                              {formatCurrency(remainingValue)} restante
                             </p>
                           </>
                         ) : (
-                          <p className="text-xs text-[#C9A84C]">
-                            {formatCurrency(order.deposit_value)} sinal
-                          </p>
+                          <p className="text-xs text-[#999999]">Sem sinal</p>
+                        )}
+                        {remainingValue > 0 && (
+                          <button
+                            type="button"
+                            disabled={isUpdating}
+                            onClick={() => receiveRemainingPayment(order.id)}
+                            className="mt-1 text-xs font-semibold text-[#27AE60] hover:text-[#1E8449] disabled:opacity-50"
+                          >
+                            Receber restante
+                          </button>
                         )}
                       </div>
 
@@ -431,15 +560,22 @@ export default function PedidosPage() {
                         className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-[#FAF6F0]"
                       >
                         <Edit3 size={16} aria-hidden="true" />
-                        <span>Editar</span>
+                        <span className="hidden sm:inline">Editar</span>
                       </Link>
 
-                      <div
-                        className="rounded-full px-3 py-1.5 text-xs font-semibold text-white"
-                        style={{ backgroundColor: getStatusColor(order.status) }}
+                      <select
+                        value={order.status}
+                        onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+                        disabled={isUpdating}
+                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[#C0392B] disabled:opacity-50"
+                        style={{ color: getStatusColor(order.status) }}
                       >
-                        {getStatusLabel(order.status)}
-                      </div>
+                        {statusOptions.filter(o => o.id !== 'todos').map((option) => (
+                          <option key={option.id} value={option.id} style={{ color: '#1A0A08' }}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
 
                       <button
                         type="button"
@@ -458,6 +594,9 @@ export default function PedidosPage() {
               )
             })}
           </div>
+
+            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          </>
         )}
       </main>
     </div>

@@ -15,6 +15,8 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
+import { formatCurrency, formatNumber, parseNumericValue } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 
@@ -51,21 +53,32 @@ type OrderCakeTopper = {
 
 type Order = {
   id: string
+  user_id?: string | null
   customer_id?: string | null
-  customer_name?: string | null
-  product_name?: string | null
-  description?: string | null
+  order_date?: string | null
   delivery_date?: string | null
   delivery_time?: string | null
+  status?: string | null
+  payment_status?: string | null
   total_value?: NumericValue
   deposit_value?: NumericValue
+  delivery_address?: string | null
+  notes?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  fulfillment_type?: string | null
+  delivery_fee?: NumericValue
   down_payment?: NumericValue
   remaining_amount?: NumericValue
-  remaining_value?: NumericValue
   remaining_payment_date?: string | null
-  status?: string | null
-  created_at?: string | null
-  notes?: string | null
+  discount_amount?: NumericValue
+  manual_total?: NumericValue
+  extras_total?: NumericValue
+  is_recurring?: boolean | null
+  recurrence_type?: string | null
+  recurrence_count?: number | null
+  first_occurrence_date?: string | null
+  // computed/joined
   customers?: CustomerSummary | null
   order_items?: OrderItem[]
   order_cake_toppers?: OrderCakeTopper[]
@@ -107,6 +120,7 @@ type Notification = {
   title: string
   description: string
   tone: 'danger' | 'warning' | 'info'
+  actionUrl: string
 }
 
 const emptyDashboardData = {
@@ -117,36 +131,6 @@ const emptyDashboardData = {
 
 const simpleProfitMargin = 0.4
 const upcomingDays = 14
-
-function parseNumericValue(value: NumericValue) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(',', '.'))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
-function formatCurrency(value: NumericValue) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(parseNumericValue(value))
-}
-
 function formatCompactCurrency(value: NumericValue) {
   const parsedValue = parseNumericValue(value)
 
@@ -156,11 +140,6 @@ function formatCompactCurrency(value: NumericValue) {
 
   return formatCurrency(parsedValue)
 }
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat('pt-BR').format(value)
-}
-
 function formatInputDate(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -242,13 +221,13 @@ function isActiveOrder(order: Order) {
 }
 
 function getCustomerName(order: Order) {
-  return order.customers?.name || order.customer_name || 'Cliente nao informado'
+  return order.customers?.name || 'Cliente não informado'
 }
 
 function getOrderTitle(order: Order) {
   const mainItem = order.order_items?.find((item) => !item.parent_order_item_id)
 
-  return mainItem?.item_name || order.product_name || order.description || 'Pedido sem resumo'
+  return mainItem?.item_name || order.notes || 'Pedido sem resumo'
 }
 
 function getOrderTotal(order: Order) {
@@ -256,7 +235,7 @@ function getOrderTotal(order: Order) {
 }
 
 function getOrderReceivable(order: Order) {
-  const remainingAmount = parseNumericValue(order.remaining_amount ?? order.remaining_value)
+  const remainingAmount = parseNumericValue(order.remaining_amount)
 
   if (remainingAmount > 0) return remainingAmount
 
@@ -482,6 +461,7 @@ function buildNotifications(params: {
         supplierOrders.reduce((sum, order) => sum + parseNumericValue(order.estimated_cost), 0)
       )}`,
       tone: 'warning',
+      actionUrl: '/pedidos-fornecedores?status=pendente',
     })
   }
 
@@ -491,6 +471,7 @@ function buildNotifications(params: {
       title: `${formatNumber(todayOrders.length)} pedido(s) para hoje`,
       description: 'Confira producao, retirada e entrega antes do horario combinado.',
       tone: 'info',
+      actionUrl: '/pedidos',
     })
   }
 
@@ -500,6 +481,7 @@ function buildNotifications(params: {
       title: `${formatNumber(ordersWithoutDate.length)} pedido(s) sem data`,
       description: 'Complete a data de entrega/festa para entrar no planejamento.',
       tone: 'danger',
+      actionUrl: '/pedidos',
     })
   }
 
@@ -511,6 +493,7 @@ function buildNotifications(params: {
         dueTodayOrOverdue.reduce((sum, order) => sum + getOrderReceivable(order), 0)
       )}`,
       tone: 'danger',
+      actionUrl: '/financeiro',
     })
   }
 
@@ -522,6 +505,7 @@ function buildNotifications(params: {
         dueSoon.reduce((sum, order) => sum + getOrderReceivable(order), 0)
       )}`,
       tone: 'warning',
+      actionUrl: '/financeiro',
     })
   }
 
@@ -614,7 +598,7 @@ export default function DashboardPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuaria nao autenticada')
+          throw new Error('Usuária não autenticada')
         }
 
         if (isMounted) {
@@ -629,13 +613,20 @@ export default function DashboardPage() {
 
         const { data: ordersData, error: ordersError } = await supabase
           .from('orders')
-          .select('*')
+          .select('id, user_id, customer_id, order_date, delivery_date, delivery_time, status, payment_status, total_value, deposit_value, delivery_address, notes, created_at, updated_at, fulfillment_type, delivery_fee, down_payment, remaining_amount, remaining_payment_date, discount_amount, manual_total, extras_total, is_recurring, recurrence_type, recurrence_count, first_occurrence_date')
           .eq('user_id', user.id)
           .order('delivery_date', { ascending: true })
           .order('created_at', { ascending: false })
 
         if (ordersError) {
-          logSupabaseError('Erro Supabase orders select:', ordersError)
+          console.error('Erro Supabase orders select:', {
+            message: ordersError?.message,
+            details: ordersError?.details,
+            hint: ordersError?.hint,
+            code: ordersError?.code,
+            fullError: ordersError,
+            stringified: JSON.stringify(ordersError, null, 2)
+          })
           throw ordersError
         }
 
@@ -709,6 +700,7 @@ export default function DashboardPage() {
 
         const hydratedOrders = orders.map((order) => ({
           ...order,
+          delivery_date: order.delivery_date || order.order_date || null,
           customers: order.customer_id ? customersById.get(order.customer_id) ?? null : null,
           order_items: itemsByOrderId.get(order.id) ?? [],
           order_cake_toppers: cakeToppersByOrderId.get(order.id) ?? [],
@@ -995,19 +987,27 @@ export default function DashboardPage() {
                     {notifications.map((notification) => {
                       const toneClass =
                         notification.tone === 'danger'
-                          ? 'border-red-200 bg-red-50 text-[#C0392B]'
+                          ? 'border-red-200 bg-red-50 text-[#C0392B] hover:bg-red-100 hover:border-red-300 shadow-sm hover:shadow-md'
                           : notification.tone === 'warning'
-                            ? 'border-[#F1D7A8] bg-[#FFF7E1] text-[#8A6B1F]'
-                            : 'border-[#DDE8F6] bg-[#F4F8FD] text-[#1A0A08]'
+                            ? 'border-[#F1D7A8] bg-[#FFF7E1] text-[#8A6B1F] hover:bg-[#FFF2CD] hover:border-[#E8C68E] shadow-sm hover:shadow-md'
+                            : 'border-[#DDE8F6] bg-[#F4F8FD] text-[#1A0A08] hover:bg-[#EAF2FA] hover:border-[#C4D8F0] shadow-sm hover:shadow-md'
 
                       return (
-                        <div
+                        <Link
+                          href={notification.actionUrl}
                           key={notification.id}
-                          className={`rounded-[16px] border p-3 ${toneClass}`}
+                          className={`group block rounded-[16px] border p-3 transition-all cursor-pointer ${toneClass}`}
                         >
-                          <p className="font-bold">{notification.title}</p>
-                          <p className="mt-1 text-sm opacity-85">{notification.description}</p>
-                        </div>
+                          <div className="flex justify-between items-start gap-2">
+                            <div>
+                              <p className="font-bold group-hover:underline">{notification.title}</p>
+                              <p className="mt-1 text-sm opacity-85">{notification.description}</p>
+                            </div>
+                            <span className="text-xs font-semibold opacity-60 group-hover:opacity-100 transition-opacity whitespace-nowrap mt-0.5">
+                              Ver detalhes →
+                            </span>
+                          </div>
+                        </Link>
                       )
                     })}
                   </div>

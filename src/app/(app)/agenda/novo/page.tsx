@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { optionalText } from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
 
 type ProductionStatus = 'pendente' | 'em_andamento' | 'concluido' | 'cancelado'
 
@@ -87,13 +89,6 @@ function parseOptionalQuantity(value: string) {
 
   return Number.isFinite(parsed) ? parsed : null
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-
-  return trimmedValue || null
-}
-
 function formatDate(dateValue: string | null) {
   if (!dateValue) return ''
 
@@ -130,17 +125,6 @@ function getOrderTitle(order: OrderOption) {
 
   return baseTitle
 }
-
-function logSupabaseError(context: string, error: SupabaseErrorDetails) {
-  console.error(context, {
-    message: error.message,
-    details: error.details,
-    hint: error.hint,
-    code: error.code,
-    fullError: error,
-  })
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message

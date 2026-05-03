@@ -6,6 +6,12 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Calculator, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  type NumericValue,
+  formatCurrency,
+  normalizeUnit,
+  parseDecimal,
+} from '@/lib/format'
 
 type IngredientForm = {
   name: string
@@ -67,20 +73,6 @@ const unitDefinitions: Record<string, UnitDefinition> = {
   pacotes: { kind: 'count', factor: 1 },
   pct: { kind: 'count', factor: 1 },
 }
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function normalizeUnit(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
 function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
@@ -105,14 +97,6 @@ function calculateCostPerUnit(
 
   return purchasePrice / purchaseQuantity
 }
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(value)
-}
-
 const initialForm: IngredientForm = {
   name: '',
   category: 'farinhas',
@@ -147,7 +131,7 @@ export default function NovoIngredientePage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuario nao autenticado')
+          throw new Error('Usuário não autenticado')
         }
 
         const { data, error: suppliersError } = await supabase

@@ -18,6 +18,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { formatCurrency, formatNumber, normalizeUnit } from '@/lib/format'
 
 type NumericValue = number | string | null | undefined
 type ProductType = 'simples' | 'kit'
@@ -202,15 +203,6 @@ function parseNumber(value: NumericValue) {
 
   return 0
 }
-
-function normalizeUnit(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
 function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
@@ -229,22 +221,6 @@ function convertQuantity(quantity: number, fromUnit: string, toUnit: string) {
 function canConvertUnits(fromUnit: string, toUnit: string) {
   return convertQuantity(1, fromUnit, toUnit) !== null
 }
-
-function formatCurrency(value: number | null | undefined) {
-  if (value === null || value === undefined) return 'Indisponivel'
-
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(value)
-}
-
-function formatNumber(value: number | null | undefined) {
-  return new Intl.NumberFormat('pt-BR', {
-    maximumFractionDigits: 3,
-  }).format(value ?? 0)
-}
-
 function formatInputNumber(value: number) {
   if (!Number.isFinite(value)) return ''
 
@@ -297,7 +273,7 @@ function getYieldLabel(recipe: Recipe) {
   const yieldAmount = parseNumber(recipe.yield_amount)
   const yieldUnit = recipe.yield_unit?.trim() || 'unidades'
 
-  if (yieldAmount <= 0) return `Rendimento nao informado em ${yieldUnit}`
+  if (yieldAmount <= 0) return `Rendimento não informado em ${yieldUnit}`
 
   return `${formatNumber(yieldAmount)} ${yieldUnit}`
 }
@@ -559,7 +535,7 @@ export default function ListaComprasPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuario nao autenticado')
+          throw new Error('Usuário não autenticado')
         }
 
         const { data: recipesData, error: recipesError } = await supabase
@@ -820,7 +796,7 @@ export default function ListaComprasPage() {
           itemKey: `ingredient:${recipeItem.ingredient_id}`,
           kind: 'ingredient',
           sourceId: recipeItem.ingredient_id,
-          name: ingredient?.name || 'Ingrediente nao encontrado',
+          name: ingredient?.name || 'Ingrediente não encontrado',
           category: ingredient?.category?.trim() || 'Sem categoria',
           supplierName,
           quantity: neededQuantity,
@@ -849,7 +825,7 @@ export default function ListaComprasPage() {
           itemKey: `packaging:${packagingLink.packaging_id}`,
           kind: 'packaging',
           sourceId: packagingLink.packaging_id,
-          name: packaging?.name || 'Embalagem nao encontrada',
+          name: packaging?.name || 'Embalagem não encontrada',
           category: packaging?.category?.trim() || 'Sem categoria',
           supplierName: 'Sem fornecedor',
           quantity: neededQuantity,
@@ -1155,7 +1131,7 @@ export default function ListaComprasPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       if (item.kind === 'ingredient') {
@@ -1237,7 +1213,7 @@ export default function ListaComprasPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const notes = itemsForTransaction
@@ -1850,7 +1826,7 @@ export default function ListaComprasPage() {
                     Nenhum item encontrado
                   </p>
                   <p className="mt-1 text-sm text-[#999999]">
-                    Produtos terceirizados sao ignorados e receitas sem insumos nao geram compras.
+                    Produtos terceirizados são ignorados e receitas sem insumos não geram compras.
                   </p>
                 </div>
               ) : (
@@ -1890,7 +1866,7 @@ export default function ListaComprasPage() {
 
                       {hasUnavailableCosts && (
                         <p className="mt-3 text-sm text-[#E8D9D4]">
-                          Alguns itens nao tem custo por unidade cadastrado.
+                          Alguns itens não têm custo por unidade cadastrado.
                         </p>
                       )}
 

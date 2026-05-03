@@ -4,6 +4,14 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, Edit3, Package, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  type NumericValue,
+  formatCurrency,
+  optionalText,
+  parseDecimal,
+} from '@/lib/format'
+import { logSupabaseError } from '@/lib/supabase-error'
+import { Pagination, paginate } from '@/components/Pagination'
 
 type SupabaseErrorLike = {
   message?: string
@@ -59,42 +67,10 @@ const categoryLabels: Record<string, string> = {
   embalagens: 'Embalagens',
   outros: 'Outros',
 }
-
-function parseDecimal(value: string) {
-  const parsed = Number(value.replace(',', '.'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function formatCurrency(value: number | null | undefined) {
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(value ?? 0)
-}
-
 function getCategoryLabel(category: string | null) {
   if (!category) return 'Sem categoria'
   return categoryLabels[category] ?? category
 }
-
-function optionalText(value: string) {
-  const trimmedValue = value.trim()
-  return trimmedValue || null
-}
-
-function logSupabaseError(context: string, error: unknown) {
-  const supabaseError =
-    typeof error === 'object' && error !== null ? (error as SupabaseErrorLike) : {}
-
-  console.error(context, {
-    message: supabaseError.message,
-    details: supabaseError.details,
-    hint: supabaseError.hint,
-    code: supabaseError.code,
-    fullError: error,
-  })
-}
-
 function buildEditForm(ingredient: Ingredient): IngredientEditForm {
   return {
     name: ingredient.name,
@@ -121,6 +97,7 @@ export default function IngredientesPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const supabase = useMemo(() => createClient(), [])
 
   useEffect(() => {
@@ -143,7 +120,7 @@ export default function IngredientesPage() {
         const [ingredientsResponse, suppliersResponse] = await Promise.all([
           supabase
             .from('ingredients')
-            .select('*')
+            .select('id, name, category, purchase_unit, purchase_quantity, purchase_price, usage_unit, cost_per_unit, stock_quantity, stock_unit, supplier_id')
             .eq('user_id', user.id)
             .order('name', { ascending: true }),
           supabase
@@ -179,6 +156,8 @@ export default function IngredientesPage() {
     }
   }, [supabase])
 
+  useEffect(() => { setCurrentPage(1) }, [searchQuery, supplierFilter])
+
   const filteredIngredients = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -193,6 +172,8 @@ export default function IngredientesPage() {
       return matchesSearch && matchesSupplier
     })
   }, [ingredients, searchQuery, supplierFilter])
+
+  const { paged: pagedIngredients, totalPages } = paginate(filteredIngredients, currentPage)
 
   const supplierById = useMemo(() => {
     return new Map(suppliers.map((supplier) => [supplier.id, supplier]))
@@ -226,7 +207,7 @@ export default function IngredientesPage() {
     if (!editForm) return
 
     if (!editForm.name.trim()) {
-      setError('Nome do ingrediente e obrigatorio')
+      setError('Nome do ingrediente é obrigatório')
       return
     }
 
@@ -240,7 +221,7 @@ export default function IngredientesPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const updatedIngredient = {
@@ -298,7 +279,7 @@ export default function IngredientesPage() {
       } = await supabase.auth.getUser()
 
       if (userError || !user) {
-        throw new Error('Usuario nao autenticado')
+        throw new Error('Usuário não autenticado')
       }
 
       const { error: deleteError } = await supabase
@@ -402,7 +383,7 @@ export default function IngredientesPage() {
             <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
             <p className="mt-3 text-sm text-[#999999]">Carregando ingredientes...</p>
           </div>
-        ) : filteredIngredients.length === 0 ? (
+        ) : pagedIngredients.length === 0 && filteredIngredients.length === 0 ? (
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white px-5 py-12 text-center">
             <Package className="mx-auto mb-4 h-12 w-12 text-[#C9A84C]" aria-hidden="true" />
             <p className="text-lg font-semibold text-[#1A0A08]">
@@ -426,8 +407,9 @@ export default function IngredientesPage() {
             )}
           </div>
         ) : (
+          <>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {filteredIngredients.map((ingredient) => {
+            {pagedIngredients.map((ingredient) => {
               const usageUnit = ingredient.usage_unit || 'un.'
               const stockUnit = ingredient.stock_unit || usageUnit
               const currentEditForm = editingId === ingredient.id ? editForm : null
@@ -620,6 +602,8 @@ export default function IngredientesPage() {
               )
             })}
           </div>
+          <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          </>
         )}
       </main>
     </div>
