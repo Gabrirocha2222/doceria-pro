@@ -182,7 +182,7 @@ export default function PedidosPage() {
         throw ordersError
       }
 
-      setOrders((data ?? []) as Order[])
+      setOrders((data ?? []) as unknown as Order[])
     } catch (err) {
       console.error('Erro ao carregar pedidos:', err)
       setError('Falha ao carregar pedidos')
