@@ -25,6 +25,8 @@ type ProductType = 'simples' | 'kit'
 type ShoppingMode = 'recipes' | 'selected_orders' | 'week' | 'month'
 type PurchaseKind = 'ingredient' | 'packaging'
 type PackagingUsageType = 'unitaria' | 'transporte'
+type PurchaseQuantitySource = 'purchase_quantity' | 'package_quantity' | 'fallback'
+type PurchasePriceSource = 'purchase_price' | 'package_cost' | 'cost_per_unit'
 
 type Recipe = {
   id: string
@@ -50,6 +52,11 @@ type Ingredient = {
   name: string
   category: string | null
   supplier_id: string | null
+  purchase_unit: string | null
+  purchase_quantity: NumericValue
+  purchase_price: NumericValue
+  package_quantity?: NumericValue
+  package_cost?: NumericValue
   usage_unit: string | null
   cost_per_unit: NumericValue
   stock_quantity: NumericValue
@@ -74,7 +81,9 @@ type Packaging = {
   user_id: string
   name: string
   category: string | null
+  package_quantity: NumericValue
   unit: string | null
+  package_cost: NumericValue
   cost_per_unit: NumericValue
   capacity: NumericValue
   capacity_unit: string | null
@@ -119,6 +128,11 @@ type AccumulatedPurchaseItem = {
   unit: string
   costPerUnit: NumericValue
   costUnit: string
+  purchaseQuantity: NumericValue
+  purchaseUnit: string
+  purchasePrice: NumericValue
+  purchaseQuantitySource: PurchaseQuantitySource
+  purchasePriceSource: PurchasePriceSource
   stockQuantity: number
   stockUnit: string
   hasMixedUnits: boolean
@@ -139,7 +153,15 @@ type ShoppingListItem = {
   stockUnit: string
   costPerUnit: NumericValue
   costUnit: string
-  estimatedCost: number | null
+  purchaseQuantity: number
+  purchaseUnit: string
+  purchasePrice: number | null
+  purchaseQuantitySource: PurchaseQuantitySource
+  purchasePriceSource: PurchasePriceSource
+  purchasePackageCount: number
+  estimatedUsageCost: number | null
+  estimatedPurchaseCost: number | null
+  hasClosedPurchasePackage: boolean
   hasMixedUnits: boolean
   sources: string[]
   isInStock: boolean
@@ -179,9 +201,14 @@ const unitDefinitions: Record<string, UnitDefinition> = {
   un: { kind: 'count', factor: 1 },
   unidade: { kind: 'count', factor: 1 },
   unidades: { kind: 'count', factor: 1 },
+  unid: { kind: 'count', factor: 1 },
+  und: { kind: 'count', factor: 1 },
   pacote: { kind: 'count', factor: 1 },
   pacotes: { kind: 'count', factor: 1 },
   pct: { kind: 'count', factor: 1 },
+  caixa: { kind: 'count', factor: 1 },
+  caixas: { kind: 'count', factor: 1 },
+  cx: { kind: 'count', factor: 1 },
 }
 
 const shoppingModeOptions: { id: ShoppingMode; label: string }[] = [
@@ -225,6 +252,10 @@ function formatInputNumber(value: number) {
   if (!Number.isFinite(value)) return ''
 
   return String(Number(value.toFixed(3)))
+}
+
+function formatOptionalCurrency(value: number | null) {
+  return value === null ? 'Indisponivel' : formatCurrency(value)
 }
 
 function formatDate(date: string | null) {
@@ -323,18 +354,127 @@ function calculateEstimatedCost(
   return (convertedQuantity ?? quantity) * unitCost
 }
 
-function calculateEstimatedUnitPrice(item: ShoppingListItem) {
-  if (item.estimatedCost === null || item.quantityToBuy <= 0) return null
-
-  return item.estimatedCost / item.quantityToBuy
-}
-
 function convertUnitPrice(pricePerUnit: number, priceUnit: string, targetUnit: string) {
   if (normalizeUnit(priceUnit) === normalizeUnit(targetUnit)) return pricePerUnit
 
   const targetQuantityInPriceUnit = convertQuantity(1, targetUnit, priceUnit)
 
   return targetQuantityInPriceUnit === null ? null : pricePerUnit * targetQuantityInPriceUnit
+}
+
+function convertQuantityOrSame(quantity: number, fromUnit: string, toUnit: string) {
+  if (normalizeUnit(fromUnit) === normalizeUnit(toUnit)) return quantity
+
+  return convertQuantity(quantity, fromUnit, toUnit)
+}
+
+function calculatePackageCount(
+  quantityToBuy: number,
+  quantityUnit: string,
+  purchaseQuantity: number,
+  purchaseUnit: string
+) {
+  if (quantityToBuy <= 0) return 0
+  if (purchaseQuantity <= 0) return quantityToBuy
+
+  const quantityInPurchaseUnit =
+    convertQuantityOrSame(quantityToBuy, quantityUnit, purchaseUnit) ?? quantityToBuy
+
+  return Math.ceil(quantityInPurchaseUnit / purchaseQuantity)
+}
+
+function calculatePackageCostFromUnitCost(
+  purchaseQuantity: number,
+  purchaseUnit: string,
+  costPerUnit: NumericValue,
+  costUnit: string
+) {
+  if (purchaseQuantity <= 0) return null
+
+  return calculateEstimatedCost(purchaseQuantity, purchaseUnit, costPerUnit, costUnit)
+}
+
+function calculateCostPerUnitFromPurchase(
+  purchasePrice: number,
+  purchaseQuantity: number,
+  purchaseUnit: string,
+  costUnit: string
+) {
+  if (purchasePrice <= 0 || purchaseQuantity <= 0) return null
+
+  const quantityInCostUnit = convertQuantityOrSame(purchaseQuantity, purchaseUnit, costUnit)
+
+  if (quantityInCostUnit === null || quantityInCostUnit <= 0) return null
+
+  return purchasePrice / quantityInCostUnit
+}
+
+function getPurchaseContainerName(item: ShoppingListItem, quantity: number) {
+  if (!item.hasClosedPurchasePackage) return item.unit
+
+  const singular =
+    item.purchaseQuantitySource === 'package_quantity' ? 'pacote' : 'unidade'
+
+  if (singular === 'pacote') return quantity === 1 ? 'pacote' : 'pacotes'
+
+  return quantity === 1 ? 'unidade' : 'unidades'
+}
+
+function getIngredientPurchaseDetails(
+  ingredient: Ingredient | undefined,
+  fallbackUnit: string
+) {
+  const purchaseQuantity = parseNumber(ingredient?.purchase_quantity)
+  const packageQuantity = parseNumber(ingredient?.package_quantity)
+  const purchasePrice = parseNumber(ingredient?.purchase_price)
+  const packageCost = parseNumber(ingredient?.package_cost)
+  const purchaseQuantitySource: PurchaseQuantitySource =
+    purchaseQuantity > 0
+      ? 'purchase_quantity'
+      : packageQuantity > 0
+        ? 'package_quantity'
+        : 'fallback'
+  const purchasePriceSource: PurchasePriceSource =
+    purchasePrice > 0
+      ? 'purchase_price'
+      : packageCost > 0
+        ? 'package_cost'
+        : 'cost_per_unit'
+
+  return {
+    purchaseQuantity:
+      purchaseQuantitySource === 'purchase_quantity'
+        ? ingredient?.purchase_quantity
+        : purchaseQuantitySource === 'package_quantity'
+          ? ingredient?.package_quantity
+          : null,
+    purchaseUnit:
+      ingredient?.purchase_unit?.trim() ||
+      ingredient?.usage_unit?.trim() ||
+      fallbackUnit,
+    purchasePrice:
+      purchasePriceSource === 'purchase_price'
+        ? ingredient?.purchase_price
+        : purchasePriceSource === 'package_cost'
+          ? ingredient?.package_cost
+          : null,
+    purchaseQuantitySource,
+    purchasePriceSource,
+  }
+}
+
+function getPackagingPurchaseDetails(packaging: Packaging | undefined, fallbackUnit: string) {
+  const packageQuantity = parseNumber(packaging?.package_quantity)
+  const packageCost = parseNumber(packaging?.package_cost)
+
+  return {
+    purchaseQuantity: packageQuantity > 0 ? packaging?.package_quantity : null,
+    purchaseUnit: packaging?.unit?.trim() || fallbackUnit,
+    purchasePrice: packageCost > 0 ? packaging?.package_cost : null,
+    purchaseQuantitySource:
+      packageQuantity > 0 ? ('package_quantity' as const) : ('fallback' as const),
+    purchasePriceSource: packageCost > 0 ? ('package_cost' as const) : ('cost_per_unit' as const),
+  }
 }
 
 function sortShoppingItems(items: ShoppingListItem[]) {
@@ -375,6 +515,11 @@ function addQuantityToAccumulator(
       unit: item.unit,
       costPerUnit: item.costPerUnit,
       costUnit: item.costUnit,
+      purchaseQuantity: item.purchaseQuantity,
+      purchaseUnit: item.purchaseUnit,
+      purchasePrice: item.purchasePrice,
+      purchaseQuantitySource: item.purchaseQuantitySource,
+      purchasePriceSource: item.purchasePriceSource,
       stockQuantity: item.stockQuantity,
       stockUnit: item.stockUnit,
       hasMixedUnits: false,
@@ -413,12 +558,41 @@ function getStockQuantityInUnit(item: AccumulatedPurchaseItem) {
 function finalizeShoppingItem(item: AccumulatedPurchaseItem): ShoppingListItem {
   const stockQuantity = getStockQuantityInUnit(item)
   const quantityToBuy = Math.max(item.quantityNeeded - stockQuantity, 0)
-  const estimatedCost = calculateEstimatedCost(
+  const purchaseQuantity = parseNumber(item.purchaseQuantity)
+  const purchasePrice = parseNumber(item.purchasePrice)
+  const hasClosedPurchasePackage = purchaseQuantity > 0
+  const purchasePackageCount = calculatePackageCount(
     quantityToBuy,
+    item.unit,
+    purchaseQuantity,
+    item.purchaseUnit
+  )
+  const estimatedUsageCost = calculateEstimatedCost(
+    item.quantityNeeded,
     item.unit,
     item.costPerUnit,
     item.costUnit
   )
+  const estimatedPackageCost =
+    purchasePrice > 0
+      ? purchasePrice
+      : calculatePackageCostFromUnitCost(
+          purchaseQuantity,
+          item.purchaseUnit,
+          item.costPerUnit,
+          item.costUnit
+        )
+  const estimatedPurchaseCost =
+    quantityToBuy <= 0
+      ? 0
+      : hasClosedPurchasePackage && estimatedPackageCost !== null
+        ? purchasePackageCount * estimatedPackageCost
+        : calculateEstimatedCost(quantityToBuy, item.unit, item.costPerUnit, item.costUnit)
+  const hasPurchaseUnitMismatch =
+    hasClosedPurchasePackage &&
+    quantityToBuy > 0 &&
+    !canConvertUnits(item.unit, item.purchaseUnit) &&
+    normalizeUnit(item.unit) !== normalizeUnit(item.purchaseUnit)
 
   return {
     itemKey: item.itemKey,
@@ -434,9 +608,18 @@ function finalizeShoppingItem(item: AccumulatedPurchaseItem): ShoppingListItem {
     stockUnit: item.stockUnit,
     costPerUnit: item.costPerUnit,
     costUnit: item.costUnit,
-    estimatedCost,
+    purchaseQuantity,
+    purchaseUnit: item.purchaseUnit,
+    purchasePrice: purchasePrice > 0 ? purchasePrice : null,
+    purchaseQuantitySource: item.purchaseQuantitySource,
+    purchasePriceSource: item.purchasePriceSource,
+    purchasePackageCount,
+    estimatedUsageCost,
+    estimatedPurchaseCost,
+    hasClosedPurchasePackage,
     hasMixedUnits:
       item.hasMixedUnits ||
+      hasPurchaseUnitMismatch ||
       (item.kind === 'ingredient' &&
         item.stockQuantity > 0 &&
         !canConvertUnits(item.stockUnit, item.unit)),
@@ -581,7 +764,7 @@ export default function ListaComprasPage() {
             const { data: ingredientsData, error: ingredientsError } = await supabase
               .from('ingredients')
               .select(
-                'id, user_id, name, category, supplier_id, usage_unit, cost_per_unit, stock_quantity, stock_unit'
+                'id, user_id, name, category, supplier_id, purchase_unit, purchase_quantity, purchase_price, package_quantity, package_cost, usage_unit, cost_per_unit, stock_quantity, stock_unit'
               )
               .eq('user_id', user.id)
               .in('id', ingredientIds)
@@ -612,7 +795,9 @@ export default function ListaComprasPage() {
           if (packagingIds.length > 0) {
             const { data: packagingData, error: packagingError } = await supabase
               .from('packaging')
-              .select('id, user_id, name, category, unit, cost_per_unit, capacity, capacity_unit')
+              .select(
+                'id, user_id, name, category, package_quantity, unit, package_cost, cost_per_unit, capacity, capacity_unit'
+              )
               .eq('user_id', user.id)
               .in('id', packagingIds)
               .order('name', { ascending: true })
@@ -788,6 +973,7 @@ export default function ListaComprasPage() {
         const unit = recipeItem.unit?.trim() || ingredient?.usage_unit?.trim() || 'unidade'
         const neededQuantity = parseNumber(recipeItem.quantity) * ingredientFactor
         const stockUnit = ingredient?.stock_unit?.trim() || ingredient?.usage_unit?.trim() || unit
+        const purchaseDetails = getIngredientPurchaseDetails(ingredient, unit)
         const supplierName = ingredient?.supplier_id
           ? supplierById.get(ingredient.supplier_id)?.name ?? 'Sem fornecedor definido'
           : 'Sem fornecedor definido'
@@ -803,6 +989,11 @@ export default function ListaComprasPage() {
           unit,
           costPerUnit: ingredient?.cost_per_unit ?? null,
           costUnit: ingredient?.usage_unit?.trim() || unit,
+          purchaseQuantity: purchaseDetails.purchaseQuantity,
+          purchaseUnit: purchaseDetails.purchaseUnit,
+          purchasePrice: purchaseDetails.purchasePrice,
+          purchaseQuantitySource: purchaseDetails.purchaseQuantitySource,
+          purchasePriceSource: purchaseDetails.purchasePriceSource,
           stockQuantity: parseNumber(ingredient?.stock_quantity),
           stockUnit,
           sourceLabel,
@@ -814,6 +1005,7 @@ export default function ListaComprasPage() {
       packagingLinks.forEach((packagingLink) => {
         const packaging = packagingById.get(packagingLink.packaging_id)
         const unit = packaging?.unit?.trim() || 'unidade'
+        const purchaseDetails = getPackagingPurchaseDetails(packaging, unit)
         const capacity = parseNumber(packaging?.capacity)
         const safeCapacity = capacity > 0 ? capacity : 1
         const neededQuantity =
@@ -832,6 +1024,11 @@ export default function ListaComprasPage() {
           unit,
           costPerUnit: packaging?.cost_per_unit ?? null,
           costUnit: unit,
+          purchaseQuantity: purchaseDetails.purchaseQuantity,
+          purchaseUnit: purchaseDetails.purchaseUnit,
+          purchasePrice: purchaseDetails.purchasePrice,
+          purchaseQuantitySource: purchaseDetails.purchaseQuantitySource,
+          purchasePriceSource: purchaseDetails.purchasePriceSource,
           stockQuantity: 0,
           stockUnit: unit,
           sourceLabel,
@@ -890,6 +1087,7 @@ export default function ListaComprasPage() {
   ])
 
   const allPurchaseItems = [...shoppingList.ingredients, ...shoppingList.packaging]
+  const allShoppingItems = [...allPurchaseItems, ...shoppingList.inStock]
   const visibleIngredientItems = shoppingList.ingredients.filter(
     (item) => showPurchasedItems || !purchasedItemKeys.has(item.itemKey)
   )
@@ -898,17 +1096,23 @@ export default function ListaComprasPage() {
   )
   const purchasedItems = allPurchaseItems.filter((item) => purchasedItemKeys.has(item.itemKey))
   const visibleShoppingItems = [...visibleIngredientItems, ...visiblePackagingItems]
-  const totalEstimatedCost = allPurchaseItems.reduce(
-    (sum, item) => sum + (item.estimatedCost ?? 0),
+  const totalEstimatedUsageCost = allShoppingItems.reduce(
+    (sum, item) => sum + (item.estimatedUsageCost ?? 0),
     0
   )
-  const totalRealCost = allPurchaseItems.reduce(
-    (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedCost ?? 0),
+  const totalEstimatedPurchaseCost = allPurchaseItems.reduce(
+    (sum, item) => sum + (item.estimatedPurchaseCost ?? 0),
+    0
+  )
+  const totalRealPurchaseCost = allPurchaseItems.reduce(
+    (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedPurchaseCost ?? 0),
     0
   )
   const hasRealCosts = allPurchaseItems.some((item) => getItemRealTotal(item) !== null)
-  const totalDifference = totalRealCost - totalEstimatedCost
-  const hasUnavailableCosts = allPurchaseItems.some((item) => item.estimatedCost === null)
+  const totalDifference = totalRealPurchaseCost - totalEstimatedPurchaseCost
+  const hasUnavailableCosts = allShoppingItems.some(
+    (item) => item.estimatedUsageCost === null || item.estimatedPurchaseCost === null
+  )
   const hasSelectedRecipes = selectedRecipeIds.size > 0
   const hasSelectedOrders = selectedOrderIds.size > 0
   const hasModeInput =
@@ -1040,13 +1244,23 @@ export default function ListaComprasPage() {
   function getPurchasedQuantityInputValue(item: ShoppingListItem) {
     return (
       purchaseRuntimeByItemKey[item.itemKey]?.purchasedQuantity ??
-      formatInputNumber(item.quantityToBuy)
+      formatInputNumber(
+        item.hasClosedPurchasePackage ? item.purchasePackageCount : item.quantityToBuy
+      )
     )
+  }
+
+  function getPurchasedQuantityValue(item: ShoppingListItem) {
+    const purchasedQuantity = parseNumber(getPurchasedQuantityInputValue(item))
+
+    if (purchasedQuantity <= 0) return 0
+
+    return item.hasClosedPurchasePackage ? Math.ceil(purchasedQuantity) : purchasedQuantity
   }
 
   function getItemRealTotal(item: ShoppingListItem) {
     const realUnitPrice = parseNumber(getRealUnitPriceInputValue(item))
-    const purchasedQuantity = parseNumber(getPurchasedQuantityInputValue(item))
+    const purchasedQuantity = getPurchasedQuantityValue(item)
 
     if (realUnitPrice <= 0 || purchasedQuantity <= 0) return null
 
@@ -1093,7 +1307,9 @@ export default function ListaComprasPage() {
           ...currentRuntime,
           [item.itemKey]: {
             ...currentItemRuntime,
-            purchasedQuantity: formatInputNumber(item.quantityToBuy),
+            purchasedQuantity: formatInputNumber(
+              item.hasClosedPurchasePackage ? item.purchasePackageCount : item.quantityToBuy
+            ),
           },
         }
       })
@@ -1107,15 +1323,22 @@ export default function ListaComprasPage() {
     const realUnitPrice = parseNumber(getRealUnitPriceInputValue(item))
 
     if (realUnitPrice <= 0) {
-      setError('Informe um preco real unitario maior que zero para atualizar o padrao.')
+      setError('Informe um preco real por pacote ou unidade maior que zero para atualizar o padrao.')
       return
     }
 
-    const standardPrice = convertUnitPrice(realUnitPrice, item.unit, item.costUnit)
+    const standardPrice = item.hasClosedPurchasePackage
+      ? calculateCostPerUnitFromPurchase(
+          realUnitPrice,
+          item.purchaseQuantity,
+          item.purchaseUnit,
+          item.costUnit
+        )
+      : convertUnitPrice(realUnitPrice, item.unit, item.costUnit)
 
     if (standardPrice === null || standardPrice <= 0) {
       setError(
-        `Nao foi possivel converter o preco de ${item.unit} para ${item.costUnit}. Ajuste a unidade antes de atualizar o padrao.`
+        `Nao foi possivel converter o preco informado para ${item.costUnit}. Ajuste a unidade antes de atualizar o padrao.`
       )
       return
     }
@@ -1135,9 +1358,19 @@ export default function ListaComprasPage() {
       }
 
       if (item.kind === 'ingredient') {
+        const shouldUpdatePackageCost =
+          item.purchasePriceSource === 'package_cost' ||
+          (item.purchasePriceSource === 'cost_per_unit' &&
+            item.purchaseQuantitySource === 'package_quantity')
+        const updatedIngredient: Partial<
+          Pick<Ingredient, 'purchase_price' | 'package_cost' | 'cost_per_unit'>
+        > = shouldUpdatePackageCost
+          ? { package_cost: realUnitPrice, cost_per_unit: standardPrice }
+          : { purchase_price: realUnitPrice, cost_per_unit: standardPrice }
+
         const { error: updateError } = await supabase
           .from('ingredients')
-          .update({ cost_per_unit: standardPrice })
+          .update(updatedIngredient)
           .eq('id', item.sourceId)
           .eq('user_id', user.id)
 
@@ -1146,14 +1379,21 @@ export default function ListaComprasPage() {
         setIngredients((currentIngredients) =>
           currentIngredients.map((ingredient) =>
             ingredient.id === item.sourceId
-              ? { ...ingredient, cost_per_unit: standardPrice }
+              ? { ...ingredient, ...updatedIngredient }
               : ingredient
           )
         )
       } else {
+        const updatedPackaging: Partial<
+          Pick<Packaging, 'package_cost' | 'cost_per_unit'>
+        > = {
+          package_cost: realUnitPrice,
+          cost_per_unit: standardPrice,
+        }
+
         const { error: updateError } = await supabase
           .from('packaging')
-          .update({ cost_per_unit: standardPrice })
+          .update(updatedPackaging)
           .eq('id', item.sourceId)
           .eq('user_id', user.id)
 
@@ -1162,7 +1402,7 @@ export default function ListaComprasPage() {
         setPackagingItems((currentItems) =>
           currentItems.map((packaging) =>
             packaging.id === item.sourceId
-              ? { ...packaging, cost_per_unit: standardPrice }
+              ? { ...packaging, ...updatedPackaging }
               : packaging
           )
         )
@@ -1170,8 +1410,8 @@ export default function ListaComprasPage() {
 
       setActionFeedback(
         item.kind === 'packaging'
-          ? `Preco padrao de "${item.name}" atualizado em cost_per_unit.`
-          : `Preco padrao de "${item.name}" atualizado.`
+          ? `Preco padrao de "${item.name}" atualizado com pacote e cost_per_unit.`
+          : `Preco padrao de "${item.name}" atualizado com compra e cost_per_unit.`
       )
     } catch (err) {
       console.error('Erro ao atualizar preco padrao:', err)
@@ -1187,12 +1427,12 @@ export default function ListaComprasPage() {
 
     const itemsForTransaction = purchasedItems.length > 0 ? purchasedItems : allPurchaseItems
     const estimatedAmount = itemsForTransaction.reduce(
-      (sum, item) => sum + (item.estimatedCost ?? 0),
+      (sum, item) => sum + (item.estimatedPurchaseCost ?? 0),
       0
     )
     const hasRealAmount = itemsForTransaction.some((item) => getItemRealTotal(item) !== null)
     const realAmount = itemsForTransaction.reduce(
-      (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedCost ?? 0),
+      (sum, item) => sum + (getItemRealTotal(item) ?? item.estimatedPurchaseCost ?? 0),
       0
     )
     const transactionAmount = hasRealAmount ? realAmount : estimatedAmount
@@ -1218,14 +1458,21 @@ export default function ListaComprasPage() {
 
       const notes = itemsForTransaction
         .map((item) => {
-          const quantity = parseNumber(getPurchasedQuantityInputValue(item)) || item.quantityToBuy
+          const quantity =
+            getPurchasedQuantityValue(item) ||
+            (item.hasClosedPurchasePackage ? item.purchasePackageCount : item.quantityToBuy)
+          const quantityLabel = getPurchaseContainerName(item, quantity)
           const realTotal = getItemRealTotal(item)
           const totalLabel =
             realTotal === null
-              ? `estimado ${formatCurrency(item.estimatedCost)}`
+              ? `estimado ${formatOptionalCurrency(item.estimatedPurchaseCost)}`
               : `real ${formatCurrency(realTotal)}`
 
-          return `${item.name}: ${formatNumber(quantity)} ${item.unit} - ${totalLabel}`
+          return `${item.name}: comprar ${formatNumber(quantity)} ${quantityLabel}; falta ${formatNumber(
+            item.quantityToBuy
+          )} ${item.unit}; custo pedidos ${formatOptionalCurrency(
+            item.estimatedUsageCost
+          )}; compra ${totalLabel}`
         })
         .join('\n')
 
@@ -1265,17 +1512,27 @@ export default function ListaComprasPage() {
       ...copyGroups.flatMap(([supplierName, supplierItems]) => [
         supplierName,
         ...supplierItems.map((item) => {
-          const costText =
-            item.estimatedCost === null
-              ? 'estimado indisponivel'
-              : `estimado ${formatCurrency(item.estimatedCost)}`
+          const purchaseCount =
+            getPurchasedQuantityValue(item) ||
+            (item.hasClosedPurchasePackage ? item.purchasePackageCount : item.quantityToBuy)
+          const purchaseCountLabel = getPurchaseContainerName(item, purchaseCount)
+          const usageCostText =
+            item.estimatedUsageCost === null
+              ? 'custo pedidos indisponivel'
+              : `custo pedidos ${formatCurrency(item.estimatedUsageCost)}`
+          const purchaseCostText =
+            item.estimatedPurchaseCost === null
+              ? 'compra estimada indisponivel'
+              : `compra estimada ${formatCurrency(item.estimatedPurchaseCost)}`
           const realTotal = getItemRealTotal(item)
           const realText = realTotal === null ? '' : ` - real ${formatCurrency(realTotal)}`
           const statusText = purchasedItemKeys.has(item.itemKey) ? 'comprado' : 'pendente'
 
-          return `- [${statusText}] ${item.name}: ${formatNumber(item.quantityToBuy)} ${
+          return `- [${statusText}] ${item.name}: necessario ${formatNumber(
+            item.quantityNeeded
+          )} ${item.unit}; falta ${formatNumber(item.quantityToBuy)} ${
             item.unit
-          } - ${costText}${realText}`
+          }; comprar ${formatNumber(purchaseCount)} ${purchaseCountLabel} - ${usageCostText}; ${purchaseCostText}${realText}`
         }),
       ]),
     ].join('\n')
@@ -1308,12 +1565,19 @@ export default function ListaComprasPage() {
 
             {group.items.map((item) => {
               const isPurchased = purchasedItemKeys.has(item.itemKey)
-              const estimatedUnitPrice = calculateEstimatedUnitPrice(item)
               const realTotal = getItemRealTotal(item)
               const realDifference =
-                realTotal === null ? null : realTotal - (item.estimatedCost ?? 0)
+                realTotal === null ? null : realTotal - (item.estimatedPurchaseCost ?? 0)
               const realUnitPriceInput = getRealUnitPriceInputValue(item)
               const purchasedQuantityInput = getPurchasedQuantityInputValue(item)
+              const purchasedQuantity = getPurchasedQuantityValue(item)
+              const purchaseContainerLabel = getPurchaseContainerName(
+                item,
+                purchasedQuantity || item.purchasePackageCount
+              )
+              const purchasePackageLabel = item.hasClosedPurchasePackage
+                ? `${formatNumber(item.purchaseQuantity)} ${item.purchaseUnit}`
+                : `${formatNumber(1)} ${item.unit}`
               const canUpdateStandardPrice =
                 parseNumber(realUnitPriceInput) > 0 && updatingPriceItemKey !== item.itemKey
 
@@ -1337,13 +1601,26 @@ export default function ListaComprasPage() {
                           {item.name}
                         </p>
                         <p className="mt-1 text-sm text-[#999999]">
-                          Comprar {formatNumber(item.quantityToBuy)} {item.unit}
+                          Comprar {formatNumber(item.purchasePackageCount)}{' '}
+                          {getPurchaseContainerName(item, item.purchasePackageCount)}
                         </p>
-                        <p className="mt-1 text-xs text-[#999999]">
-                          Necessario {formatNumber(item.quantityNeeded)} {item.unit}
-                          {item.kind === 'ingredient' &&
-                            ` - estoque ${formatNumber(item.stockQuantity)} ${item.unit}`}
-                        </p>
+                        <div className="mt-2 space-y-1 text-xs text-[#999999]">
+                          <p>
+                            Necessario para pedidos: {formatNumber(item.quantityNeeded)}{' '}
+                            {item.unit}
+                          </p>
+                          <p>
+                            Estoque disponivel: {formatNumber(item.stockQuantity)} {item.unit}
+                          </p>
+                          <p>
+                            Falta comprar: {formatNumber(item.quantityToBuy)} {item.unit}
+                          </p>
+                          <p>Compra em pacote/unidade de: {purchasePackageLabel}</p>
+                          <p>
+                            Comprar: {formatNumber(item.purchasePackageCount)}{' '}
+                            {getPurchaseContainerName(item, item.purchasePackageCount)}
+                          </p>
+                        </div>
                         {item.sources.length > 0 && (
                           <p className="mt-2 text-xs text-[#6F625F]">
                             Origem: {item.sources.join(', ')}
@@ -1370,28 +1647,30 @@ export default function ListaComprasPage() {
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                       <div className="rounded-lg bg-white px-3 py-2">
                         <p className="text-xs font-medium text-[#999999]">
-                          Preco estimado unitario
+                          Custo usado nos pedidos
                         </p>
                         <p className="mt-1 font-bold text-[#1A0A08]">
-                          {formatCurrency(estimatedUnitPrice)}
-                          {estimatedUnitPrice !== null && (
+                          {formatOptionalCurrency(item.estimatedUsageCost)}
+                          {item.estimatedUsageCost !== null && (
                             <span className="ml-1 text-xs font-semibold text-[#999999]">
-                              / {item.unit}
+                              proporcional
                             </span>
                           )}
                         </p>
                       </div>
 
                       <div className="rounded-lg bg-white px-3 py-2">
-                        <p className="text-xs font-medium text-[#999999]">Total estimado</p>
+                        <p className="text-xs font-medium text-[#999999]">
+                          Valor estimado da compra
+                        </p>
                         <p className="mt-1 font-bold text-[#1A0A08]">
-                          {formatCurrency(item.estimatedCost)}
+                          {formatOptionalCurrency(item.estimatedPurchaseCost)}
                         </p>
                       </div>
 
                       <label className="block">
                         <span className="mb-2 block text-xs font-semibold text-[#1A0A08]">
-                          Preco real unitario
+                          Preco real por {purchaseContainerLabel}
                         </span>
                         <input
                           type="number"
@@ -1413,12 +1692,12 @@ export default function ListaComprasPage() {
 
                       <label className="block">
                         <span className="mb-2 block text-xs font-semibold text-[#1A0A08]">
-                          Quantidade comprada
+                          Quantidade comprada ({purchaseContainerLabel})
                         </span>
                         <input
                           type="number"
                           min="0"
-                          step="0.001"
+                          step={item.hasClosedPurchasePackage ? '1' : '0.001'}
                           inputMode="decimal"
                           value={purchasedQuantityInput}
                           onChange={(event) =>
@@ -1456,6 +1735,8 @@ export default function ListaComprasPage() {
                       <p className="text-xs text-[#999999]">
                         Padrao atual: {formatCurrency(parseNumber(item.costPerUnit))} /{' '}
                         {item.costUnit}
+                        {item.purchasePrice !== null &&
+                          ` - compra ${formatCurrency(item.purchasePrice)} por ${purchasePackageLabel}`}
                       </p>
                       <button
                         type="button"
@@ -1494,7 +1775,7 @@ export default function ListaComprasPage() {
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <p className="font-semibold text-[#1A0A08]">{item.name}</p>
               <p className="text-[#999999]">
-                {formatNumber(item.quantityNeeded)} {item.unit}
+                Necessario {formatNumber(item.quantityNeeded)} {item.unit}
               </p>
             </div>
             {item.kind === 'ingredient' && (
@@ -1502,6 +1783,9 @@ export default function ListaComprasPage() {
                 Em estoque: {formatNumber(item.stockQuantity)} {item.unit}
               </p>
             )}
+            <p className="mt-1 text-xs text-[#999999]">
+              Custo usado nos pedidos: {formatOptionalCurrency(item.estimatedUsageCost)}
+            </p>
           </div>
         ))}
       </div>
@@ -1831,28 +2115,36 @@ export default function ListaComprasPage() {
                 </div>
               ) : (
                 <>
-                  {allPurchaseItems.length > 0 && (
+                  {allShoppingItems.length > 0 && (
                     <div className="mb-5 rounded-[16px] bg-[#1A0A08] p-4 text-white">
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                         <div>
                           <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
-                            Total estimado
+                            Custo estimado dos pedidos
                           </p>
                           <p className="mt-1 text-2xl font-bold">
-                            {formatCurrency(totalEstimatedCost)}
+                            {formatCurrency(totalEstimatedUsageCost)}
                           </p>
                         </div>
                         <div>
                           <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
-                            Total real
+                            Valor estimado para comprar
                           </p>
                           <p className="mt-1 text-2xl font-bold">
-                            {formatCurrency(hasRealCosts ? totalRealCost : totalEstimatedCost)}
+                            {formatCurrency(totalEstimatedPurchaseCost)}
                           </p>
                         </div>
                         <div>
                           <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
-                            Diferenca
+                            Total real da compra
+                          </p>
+                          <p className="mt-1 text-2xl font-bold">
+                            {formatCurrency(hasRealCosts ? totalRealPurchaseCost : 0)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-[#E8D9D4]">
+                            Diferenca estimado x real
                           </p>
                           <p
                             className={`mt-1 text-2xl font-bold ${
@@ -1870,17 +2162,19 @@ export default function ListaComprasPage() {
                         </p>
                       )}
 
-                      <button
-                        type="button"
-                        onClick={handleFinalizePurchase}
-                        disabled={!canFinalizePurchase}
-                        className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD] disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <ReceiptText size={18} aria-hidden="true" />
-                        <span>
-                          {isFinalizingPurchase ? 'Finalizando...' : 'Finalizar compra'}
-                        </span>
-                      </button>
+                      {allPurchaseItems.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleFinalizePurchase}
+                          disabled={!canFinalizePurchase}
+                          className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 font-semibold text-[#1A0A08] transition-colors hover:bg-[#F4E9DD] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <ReceiptText size={18} aria-hidden="true" />
+                          <span>
+                            {isFinalizingPurchase ? 'Finalizando...' : 'Finalizar compra'}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   )}
 
