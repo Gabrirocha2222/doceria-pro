@@ -9,6 +9,7 @@ import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 type SupplierOrderStatus = 'pendente' | 'encomendado' | 'recebido' | 'cancelado'
+type SupplierOrderStatusFilter = SupplierOrderStatus | 'todos'
 type JsonPrimitive = string | number | boolean | null
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
@@ -66,7 +67,7 @@ type CustomerOrder = {
   customers?: CustomerSummary | CustomerSummary[] | null
 }
 
-const statusOptions: { id: SupplierOrderStatus | 'todos'; label: string }[] = [
+const statusOptions: { id: SupplierOrderStatusFilter; label: string }[] = [
   { id: 'todos', label: 'Todos' },
   { id: 'pendente', label: 'Pendente' },
   { id: 'encomendado', label: 'Encomendado' },
@@ -164,12 +165,16 @@ function getCustomer(customerOrder: CustomerOrder | undefined) {
   return Array.isArray(customer) ? customer[0] : customer
 }
 
+function isSupplierOrderStatusFilter(value: string): value is SupplierOrderStatusFilter {
+  return statusOptions.some((status) => status.id === value)
+}
+
 export default function PedidosFornecedoresPage() {
   const [supplierOrders, setSupplierOrders] = useState<SupplierOrder[]>([])
   const [suppliersById, setSuppliersById] = useState<Record<string, Supplier>>({})
   const [customerOrdersById, setCustomerOrdersById] = useState<Record<string, CustomerOrder>>({})
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedStatus, setSelectedStatus] = useState<SupplierOrderStatus | 'todos'>('todos')
+  const [selectedStatus, setSelectedStatus] = useState<SupplierOrderStatusFilter>('pendente')
   const [selectedSupplierId, setSelectedSupplierId] = useState('todos')
   const [selectedDate, setSelectedDate] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -283,8 +288,12 @@ export default function PedidosFornecedoresPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const statusParam = params.get('status')
-      if (statusParam && ['pendente', 'encomendado', 'recebido', 'cancelado'].includes(statusParam)) {
-        setSelectedStatus(statusParam as SupplierOrderStatus)
+      if (statusParam && isSupplierOrderStatusFilter(statusParam)) {
+        const timeoutId = window.setTimeout(() => {
+          setSelectedStatus(statusParam)
+        }, 0)
+
+        return () => window.clearTimeout(timeoutId)
       }
     }
   }, [])
@@ -414,7 +423,7 @@ export default function PedidosFornecedoresPage() {
           <select
             value={selectedStatus}
             onChange={(event) =>
-              setSelectedStatus(event.target.value as SupplierOrderStatus | 'todos')
+              setSelectedStatus(event.target.value as SupplierOrderStatusFilter)
             }
             className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
           >
