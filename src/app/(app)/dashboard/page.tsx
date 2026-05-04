@@ -20,11 +20,13 @@ import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 
-type SupabaseErrorLike = {
-  message?: string
-  details?: string
-  hint?: string
-  code?: string
+type TransactionType = 'entrada' | 'saida'
+
+type FinancialTransaction = {
+  id: string
+  type: TransactionType
+  amount: NumericValue
+  transaction_date: string | null
 }
 
 type CustomerSummary = {
@@ -108,7 +110,8 @@ type DateRange = {
 }
 
 type PeriodSummary = {
-  revenue: number
+  ordersTotal: number
+  received: number
   profit: number
   orderCount: number
   receivable: number
@@ -126,6 +129,7 @@ type Notification = {
 const emptyDashboardData = {
   orders: [] as Order[],
   supplierOrders: [] as SupplierOrder[],
+  transactions: [] as FinancialTransaction[],
   recipeCostsById: new Map<string, RecipeCost>(),
 }
 
@@ -234,12 +238,29 @@ function getOrderTotal(order: Order) {
   return parseNumericValue(order.total_value)
 }
 
+function getOrderPeriodDate(order: Order) {
+  return order.delivery_date || order.order_date || null
+}
+
+function getReceivableReferenceDate(order: Order) {
+  return order.remaining_payment_date || order.delivery_date || null
+}
+
 function getOrderReceivable(order: Order) {
   const remainingAmount = parseNumericValue(order.remaining_amount)
 
   if (remainingAmount > 0) return remainingAmount
 
-  return Math.max(getOrderTotal(order) - parseNumericValue(order.down_payment ?? order.deposit_value), 0)
+  return 0
+}
+
+function calculateReceivedInRange(transactions: FinancialTransaction[], range: DateRange) {
+  return transactions
+    .filter(
+      (transaction) =>
+        transaction.type === 'entrada' && isDateInRange(transaction.transaction_date, range)
+    )
+    .reduce((sum, transaction) => sum + parseNumericValue(transaction.amount), 0)
 }
 
 function normalizeCostUnit(value: string | null | undefined) {
@@ -362,30 +383,36 @@ function calculateOrderCost(order: Order, recipeCostsById: Map<string, RecipeCos
 
 function calculatePeriodSummary(
   orders: Order[],
+  transactions: FinancialTransaction[],
   range: DateRange,
   recipeCostsById: Map<string, RecipeCost>
 ): PeriodSummary {
   const ordersInPeriod = orders.filter(
-    (order) => isActiveOrder(order) && isDateInRange(order.delivery_date, range)
+    (order) => isActiveOrder(order) && isDateInRange(getOrderPeriodDate(order), range)
   )
+  const received = calculateReceivedInRange(transactions, range)
   const receivable = orders
     .filter((order) => {
       if (!isActiveOrder(order)) return false
 
-      const referenceDate = order.remaining_payment_date || order.delivery_date
+      const receivable = getOrderReceivable(order)
+      const referenceDate = getReceivableReferenceDate(order)
 
-      return isDateInRange(referenceDate, range)
+      return receivable > 0 && isDateInRange(referenceDate, range)
     })
     .reduce((sum, order) => sum + getOrderReceivable(order), 0)
 
   return ordersInPeriod.reduce<PeriodSummary>(
     (summary, order) => {
-      const revenue = getOrderTotal(order)
+      const ordersTotal = getOrderTotal(order)
       const orderCost = calculateOrderCost(order, recipeCostsById)
-      const profit = orderCost.hasCost ? revenue - orderCost.cost : revenue * simpleProfitMargin
+      const profit = orderCost.hasCost
+        ? ordersTotal - orderCost.cost
+        : ordersTotal * simpleProfitMargin
 
       return {
-        revenue: summary.revenue + revenue,
+        ordersTotal: summary.ordersTotal + ordersTotal,
+        received,
         profit: summary.profit + profit,
         orderCount: summary.orderCount + 1,
         receivable,
@@ -393,7 +420,8 @@ function calculatePeriodSummary(
       }
     },
     {
-      revenue: 0,
+      ordersTotal: 0,
+      received,
       profit: 0,
       orderCount: 0,
       receivable,
@@ -404,7 +432,7 @@ function calculatePeriodSummary(
 
 function groupOrdersByDate(orders: Order[]) {
   const groups = orders.reduce<Map<string, Order[]>>((currentGroups, order) => {
-    const deliveryDate = normalizeDate(order.delivery_date)
+    const deliveryDate = normalizeDate(getOrderPeriodDate(order))
     if (!deliveryDate) return currentGroups
 
     const currentOrders = currentGroups.get(deliveryDate) ?? []
@@ -430,19 +458,19 @@ function buildNotifications(params: {
 }): Notification[] {
   const { orders, supplierOrders, today } = params
   const todayOrders = orders.filter(
-    (order) => isActiveOrder(order) && normalizeDate(order.delivery_date) === today
+    (order) => isActiveOrder(order) && normalizeDate(getOrderPeriodDate(order)) === today
   )
-  const ordersWithoutDate = orders.filter((order) => isActiveOrder(order) && !order.delivery_date)
+  const ordersWithoutDate = orders.filter((order) => isActiveOrder(order) && !getOrderPeriodDate(order))
   const dueTodayOrOverdue = orders.filter((order) => {
     const receivable = getOrderReceivable(order)
-    const paymentDate = normalizeDate(order.remaining_payment_date)
+    const paymentDate = normalizeDate(getReceivableReferenceDate(order))
 
     return isActiveOrder(order) && receivable > 0 && Boolean(paymentDate && paymentDate <= today)
   })
   const nextPaymentLimit = formatInputDate(addDays(new Date(`${today}T00:00:00`), 3))
   const dueSoon = orders.filter((order) => {
     const receivable = getOrderReceivable(order)
-    const paymentDate = normalizeDate(order.remaining_payment_date)
+    const paymentDate = normalizeDate(getReceivableReferenceDate(order))
 
     return (
       isActiveOrder(order) &&
@@ -581,6 +609,13 @@ export default function DashboardPage() {
   const today = useMemo(() => formatInputDate(new Date()), [])
   const weekRange = useMemo(() => getCurrentWeekRange(), [])
   const monthRange = useMemo(() => getCurrentMonthRange(), [])
+  const transactionRange = useMemo(
+    () => ({
+      start: weekRange.start < monthRange.start ? weekRange.start : monthRange.start,
+      end: weekRange.end > monthRange.end ? weekRange.end : monthRange.end,
+    }),
+    [monthRange.end, monthRange.start, weekRange.end, weekRange.start]
+  )
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
 
@@ -632,16 +667,27 @@ export default function DashboardPage() {
 
         const orders = (ordersData ?? []) as Order[]
 
-        const [orderItemsResult, cakeToppersResult, supplierOrders] = await Promise.all([
-          supabase
-            .from('order_items')
-            .select(
-              'id, order_id, recipe_id, parent_order_item_id, item_name, quantity, unit_price, subtotal, notes'
-            )
-            .eq('user_id', user.id),
-          supabase.from('order_cake_toppers').select('id, order_id, cost').eq('user_id', user.id),
-          loadSupplierOrders(supabase, user.id),
-        ])
+        const [orderItemsResult, cakeToppersResult, supplierOrders, transactionsResult] =
+          await Promise.all([
+            supabase
+              .from('order_items')
+              .select(
+                'id, order_id, recipe_id, parent_order_item_id, item_name, quantity, unit_price, subtotal, notes'
+              )
+              .eq('user_id', user.id),
+            supabase
+              .from('order_cake_toppers')
+              .select('id, order_id, cost')
+              .eq('user_id', user.id),
+            loadSupplierOrders(supabase, user.id),
+            supabase
+              .from('financial_transactions')
+              .select('id, type, amount, transaction_date')
+              .eq('user_id', user.id)
+              .eq('type', 'entrada')
+              .gte('transaction_date', transactionRange.start)
+              .lte('transaction_date', transactionRange.end),
+          ])
 
         let orderItems: OrderItem[] = []
         if (orderItemsResult.error) {
@@ -655,6 +701,16 @@ export default function DashboardPage() {
           logSupabaseError('Erro Supabase order_cake_toppers select:', cakeToppersResult.error)
         } else {
           cakeToppers = (cakeToppersResult.data ?? []) as OrderCakeTopper[]
+        }
+
+        let transactions: FinancialTransaction[] = []
+        if (transactionsResult.error) {
+          logSupabaseError(
+            'Erro Supabase financial_transactions dashboard select:',
+            transactionsResult.error
+          )
+        } else {
+          transactions = (transactionsResult.data ?? []) as FinancialTransaction[]
         }
 
         const recipeIds = Array.from(
@@ -700,7 +756,6 @@ export default function DashboardPage() {
 
         const hydratedOrders = orders.map((order) => ({
           ...order,
-          delivery_date: order.delivery_date || order.order_date || null,
           customers: order.customer_id ? customersById.get(order.customer_id) ?? null : null,
           order_items: itemsByOrderId.get(order.id) ?? [],
           order_cake_toppers: cakeToppersByOrderId.get(order.id) ?? [],
@@ -710,6 +765,7 @@ export default function DashboardPage() {
           setDashboardData({
             orders: hydratedOrders,
             supplierOrders,
+            transactions,
             recipeCostsById,
           })
         }
@@ -734,7 +790,7 @@ export default function DashboardPage() {
       isMounted = false
       window.clearTimeout(timeoutId)
     }
-  }, [supabase])
+  }, [supabase, transactionRange.end, transactionRange.start])
 
   const activeOrders = useMemo(
     () => dashboardData.orders.filter((order) => isActiveOrder(order)),
@@ -743,7 +799,7 @@ export default function DashboardPage() {
 
   const todayOrders = useMemo(() => {
     return activeOrders
-      .filter((order) => normalizeDate(order.delivery_date) === today)
+      .filter((order) => normalizeDate(getOrderPeriodDate(order)) === today)
       .sort((firstOrder, secondOrder) =>
         (firstOrder.delivery_time || '99:99').localeCompare(secondOrder.delivery_time || '99:99')
       )
@@ -752,7 +808,7 @@ export default function DashboardPage() {
   const upcomingOrdersByDate = useMemo(() => {
     const endDate = formatInputDate(addDays(new Date(`${today}T00:00:00`), upcomingDays))
     const orders = activeOrders.filter((order) => {
-      const deliveryDate = normalizeDate(order.delivery_date)
+      const deliveryDate = normalizeDate(getOrderPeriodDate(order))
 
       return Boolean(deliveryDate && deliveryDate > today && deliveryDate <= endDate)
     })
@@ -761,12 +817,24 @@ export default function DashboardPage() {
   }, [activeOrders, today])
 
   const weekSummary = useMemo(
-    () => calculatePeriodSummary(activeOrders, weekRange, dashboardData.recipeCostsById),
-    [activeOrders, dashboardData.recipeCostsById, weekRange]
+    () =>
+      calculatePeriodSummary(
+        activeOrders,
+        dashboardData.transactions,
+        weekRange,
+        dashboardData.recipeCostsById
+      ),
+    [activeOrders, dashboardData.recipeCostsById, dashboardData.transactions, weekRange]
   )
   const monthSummary = useMemo(
-    () => calculatePeriodSummary(activeOrders, monthRange, dashboardData.recipeCostsById),
-    [activeOrders, dashboardData.recipeCostsById, monthRange]
+    () =>
+      calculatePeriodSummary(
+        activeOrders,
+        dashboardData.transactions,
+        monthRange,
+        dashboardData.recipeCostsById
+      ),
+    [activeOrders, dashboardData.recipeCostsById, dashboardData.transactions, monthRange]
   )
 
   const notifications = useMemo(
@@ -784,13 +852,13 @@ export default function DashboardPage() {
 
     return Array.from({ length: 7 }, (_, index) => {
       const date = formatInputDate(addDays(startDate, index))
-      const revenue = activeOrders
-        .filter((order) => normalizeDate(order.delivery_date) === date)
+      const ordersTotal = activeOrders
+        .filter((order) => normalizeDate(getOrderPeriodDate(order)) === date)
         .reduce((sum, order) => sum + getOrderTotal(order), 0)
 
       return {
         day: new Date(`${date}T00:00:00`).toLocaleDateString('pt-BR', { weekday: 'short' }),
-        value: revenue,
+        value: ordersTotal,
       }
     })
   }, [activeOrders, weekRange.start])
@@ -800,52 +868,58 @@ export default function DashboardPage() {
 
   const metricCards = [
     {
-      label: 'Faturamento semanal',
-      value: formatCurrency(weekSummary.revenue),
-      helper: `${formatNumber(weekSummary.orderCount)} pedido(s)`,
+      label: 'Pedidos hoje',
+      value: formatNumber(todayOrders.length),
+      helper: `${formatCurrency(todayOrders.reduce((sum, order) => sum + getOrderTotal(order), 0))} em pedidos`,
+      icon: CalendarDays,
+    },
+    {
+      label: 'Pedidos da semana',
+      value: formatCurrency(weekSummary.ordersTotal),
+      helper: `${formatNumber(weekSummary.orderCount)} pedido(s) por entrega`,
+      icon: Receipt,
+    },
+    {
+      label: 'Pedidos do mes',
+      value: formatCurrency(monthSummary.ordersTotal),
+      helper: `${formatNumber(monthSummary.orderCount)} pedido(s) por entrega`,
+      icon: Receipt,
+    },
+    {
+      label: 'Recebido na semana',
+      value: formatCurrency(weekSummary.received),
+      helper: 'Entradas registradas no periodo',
       icon: DollarSign,
     },
     {
-      label: 'Lucro estimado semanal',
+      label: 'Recebido no mes',
+      value: formatCurrency(monthSummary.received),
+      helper: 'Entradas registradas no periodo',
+      icon: DollarSign,
+    },
+    {
+      label: 'A receber na semana',
+      value: formatCurrency(weekSummary.receivable),
+      helper: 'Por data prevista de recebimento',
+      icon: Wallet,
+    },
+    {
+      label: 'A receber no mes',
+      value: formatCurrency(monthSummary.receivable),
+      helper: 'Por data prevista de recebimento',
+      icon: Wallet,
+    },
+    {
+      label: 'Lucro estimado dos pedidos da semana',
       value: formatCurrency(weekSummary.profit),
       helper: weekSummary.hasSimpleProfit ? 'Estimativa simples em parte' : 'Com custos cadastrados',
       icon: TrendingUp,
     },
     {
-      label: 'Pedidos semanais',
-      value: formatNumber(weekSummary.orderCount),
-      helper: `${formatDate(weekRange.start)} a ${formatDate(weekRange.end)}`,
-      icon: Receipt,
-    },
-    {
-      label: 'A receber semanal',
-      value: formatCurrency(weekSummary.receivable),
-      helper: 'Por data de recebimento ou entrega',
-      icon: Wallet,
-    },
-    {
-      label: 'Faturamento mensal',
-      value: formatCurrency(monthSummary.revenue),
-      helper: `${formatNumber(monthSummary.orderCount)} pedido(s)`,
-      icon: DollarSign,
-    },
-    {
-      label: 'Lucro estimado mensal',
+      label: 'Lucro estimado dos pedidos do mes',
       value: formatCurrency(monthSummary.profit),
       helper: monthSummary.hasSimpleProfit ? 'Estimativa simples em parte' : 'Com custos cadastrados',
       icon: TrendingUp,
-    },
-    {
-      label: 'Pedidos mensais',
-      value: formatNumber(monthSummary.orderCount),
-      helper: `${formatDate(monthRange.start)} a ${formatDate(monthRange.end)}`,
-      icon: Receipt,
-    },
-    {
-      label: 'A receber no mes',
-      value: formatCurrency(monthSummary.receivable),
-      helper: 'Por data de recebimento ou entrega',
-      icon: Wallet,
     },
   ]
 
@@ -1015,36 +1089,42 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="mb-8 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {metricCards.map((metric) => {
-                const Icon = metric.icon
+            <section className="mb-8">
+              <p className="mb-3 text-sm text-[#6F625F]">
+                Pedidos do periodo usam a data de entrega. Recebidos usam a data de
+                entrada/recebimento.
+              </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {metricCards.map((metric) => {
+                  const Icon = metric.icon
 
-                return (
-                  <div
-                    key={metric.label}
-                    className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 transition-shadow hover:shadow-md"
-                  >
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <p className="text-xs font-medium text-[#999999]">{metric.label}</p>
-                      <Icon size={20} className="text-[#C9A84C]" aria-hidden="true" />
+                  return (
+                    <div
+                      key={metric.label}
+                      className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 transition-shadow hover:shadow-md"
+                    >
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <p className="text-xs font-medium text-[#999999]">{metric.label}</p>
+                        <Icon size={20} className="text-[#C9A84C]" aria-hidden="true" />
+                      </div>
+                      <p className="text-2xl font-bold text-[#1A0A08]">{metric.value}</p>
+                      <p className="mt-2 text-xs font-semibold text-[#6F625F]">{metric.helper}</p>
                     </div>
-                    <p className="text-2xl font-bold text-[#1A0A08]">{metric.value}</p>
-                    <p className="mt-2 text-xs font-semibold text-[#6F625F]">{metric.helper}</p>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
             </section>
 
             <section className="mb-8 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5">
               <div className="mb-6 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <h2 className="text-lg font-bold text-[#1A0A08]">Faturamento da semana</h2>
+                  <h2 className="text-lg font-bold text-[#1A0A08]">Pedidos da semana</h2>
                   <p className="text-sm text-[#999999]">
                     {formatDate(weekRange.start)} a {formatDate(weekRange.end)}
                   </p>
                 </div>
                 <p className="text-sm font-bold text-[#C0392B]">
-                  Total {formatCurrency(weekSummary.revenue)}
+                  Total {formatCurrency(weekSummary.ordersTotal)}
                 </p>
               </div>
 

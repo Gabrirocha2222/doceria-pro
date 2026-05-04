@@ -74,7 +74,7 @@ type Order = {
   down_payment?: NumericValue
   deposit_value?: NumericValue
   remaining_amount?: NumericValue
-  remaining_value?: NumericValue
+  remaining_payment_date?: string | null
   status?: string | null
   created_at?: string | null
 }
@@ -377,14 +377,7 @@ function getReportRange(period: ReportPeriod, customStartDate: string, customEnd
 }
 
 function getOrderReferenceDate(order: Order) {
-  return normalizeDate(
-    order.delivery_date ||
-      order.event_date ||
-      order.party_date ||
-      order.due_date ||
-      order.order_date ||
-      order.created_at
-  )
+  return normalizeDate(order.delivery_date || order.order_date)
 }
 
 function isActiveOrder(order: Order) {
@@ -398,23 +391,15 @@ function getOrderTotal(order: Order) {
 }
 
 function getOrderReceivable(order: Order) {
-  if (order.remaining_amount !== undefined && order.remaining_amount !== null) {
-    return parseNumericValue(order.remaining_amount)
-  }
+  const remainingAmount = parseNumericValue(order.remaining_amount)
 
-  if (order.remaining_value !== undefined && order.remaining_value !== null) {
-    return parseNumericValue(order.remaining_value)
-  }
+  if (remainingAmount > 0) return remainingAmount
 
-  if (order.down_payment !== undefined && order.down_payment !== null) {
-    return Math.max(getOrderTotal(order) - parseNumericValue(order.down_payment), 0)
-  }
+  return 0
+}
 
-  if (order.deposit_value !== undefined && order.deposit_value !== null) {
-    return Math.max(getOrderTotal(order) - parseNumericValue(order.deposit_value), 0)
-  }
-
-  return getOrderTotal(order)
+function getReceivableReferenceDate(order: Order) {
+  return normalizeDate(order.remaining_payment_date || order.delivery_date)
 }
 
 function getCustomerName(order: Order, customersById: Map<string, CustomerSummary>) {
@@ -609,11 +594,26 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
   )
 
   const realizedRevenue = data.transactions
-    .filter((transaction) => transaction.type === 'entrada')
+    .filter(
+      (transaction) =>
+        transaction.type === 'entrada' && isDateInRange(transaction.transaction_date, range)
+    )
     .reduce((sum, transaction) => sum + getTransactionAmount(transaction), 0)
   const realizedExpenses = data.transactions
-    .filter((transaction) => transaction.type === 'saida')
+    .filter(
+      (transaction) =>
+        transaction.type === 'saida' && isDateInRange(transaction.transaction_date, range)
+    )
     .reduce((sum, transaction) => sum + getTransactionAmount(transaction), 0)
+  const receivable = data.orders
+    .filter((order) => {
+      if (!isActiveOrder(order)) return false
+
+      const receivableAmount = getOrderReceivable(order)
+
+      return receivableAmount > 0 && isDateInRange(getReceivableReferenceDate(order), range)
+    })
+    .reduce((sum, order) => sum + getOrderReceivable(order), 0)
   const categories: CostCategories = {
     ingredients: 0,
     packaging: 0,
@@ -623,7 +623,6 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
   }
   let revenue = 0
   let estimatedCost = 0
-  let receivable = 0
   let hasPartialEstimate = data.warnings.length > 0 || supplierOrdersWithoutCost
 
   const rows = ordersInPeriod.map<OrderReportRow>((order) => {
@@ -759,7 +758,6 @@ function buildFinancialReport(data: ReportData, range: DateRange): ReportSummary
 
     revenue += orderTotal
     estimatedCost += orderCost
-    receivable += orderReceivable
     hasPartialEstimate = hasPartialEstimate || orderIsPartial
 
     return {
@@ -1158,8 +1156,6 @@ export default function FinanceiroPage() {
     )
   }, [transactions])
 
-  useEffect(() => { setCurrentPage(1) }, [searchQuery, typeFilter, categoryFilter])
-
   const filteredTransactions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -1190,7 +1186,7 @@ export default function FinanceiroPage() {
       entradas,
       saidas,
       saldo,
-      lucroEstimado: saldo,
+      resultado: saldo,
     }
   }, [transactions])
 
@@ -1214,10 +1210,10 @@ export default function FinanceiroPage() {
       color: summary.saldo >= 0 ? '#17803D' : '#C0392B',
     },
     {
-      label: 'Lucro estimado',
-      value: summary.lucroEstimado,
+      label: 'Resultado do mes',
+      value: summary.resultado,
       icon: TrendingUp,
-      color: summary.lucroEstimado >= 0 ? '#C9A84C' : '#C0392B',
+      color: summary.resultado >= 0 ? '#C9A84C' : '#C0392B',
     },
   ]
 
@@ -1228,11 +1224,20 @@ export default function FinanceiroPage() {
 
   const reportCards = [
     {
-      label: 'Faturamento previsto',
+      label: 'Pedidos do periodo',
       value: reportSummary.revenue,
-      realizedLabel: 'Realizado em entradas',
-      realized: reportSummary.realizedRevenue,
-      difference: reportSummary.revenue - reportSummary.realizedRevenue,
+      realizedLabel: `${formatNumber(reportSummary.rows.length)} pedido(s) por entrega`,
+      realized: null,
+      difference: null,
+      icon: ReceiptText,
+      color: '#17803D',
+    },
+    {
+      label: 'Recebido no periodo',
+      value: reportSummary.realizedRevenue,
+      realizedLabel: 'Entradas registradas no financeiro',
+      realized: null,
+      difference: null,
       icon: ArrowUpCircle,
       color: '#17803D',
     },
@@ -1246,11 +1251,11 @@ export default function FinanceiroPage() {
       color: '#C0392B',
     },
     {
-      label: 'Lucro estimado',
+      label: 'Lucro estimado dos pedidos',
       value: reportSummary.estimatedProfit,
-      realizedLabel: 'Lucro realizado',
-      realized: reportSummary.realizedProfit,
-      difference: reportSummary.estimatedProfit - reportSummary.realizedProfit,
+      realizedLabel: 'Baseado nos pedidos do periodo',
+      realized: null,
+      difference: null,
       icon: TrendingUp,
       color: reportSummary.estimatedProfit >= 0 ? '#C9A84C' : '#C0392B',
     },
@@ -1275,7 +1280,7 @@ export default function FinanceiroPage() {
     {
       label: 'Valores a receber',
       value: reportSummary.receivable,
-      realizedLabel: 'Em aberto nos pedidos',
+      realizedLabel: 'Restantes com vencimento no periodo',
       realized: null,
       difference: null,
       icon: Wallet,
@@ -1361,8 +1366,8 @@ export default function FinanceiroPage() {
                   Relatorios e previsoes
                 </h2>
                 <p className="mt-2 max-w-3xl text-sm text-[#6F625F]">
-                  Os valores sao estimativas baseadas nos custos cadastrados. Atualize precos na
-                  Lista de Compras para manter os relatorios corretos.
+                  Os valores sao estimativas baseadas nos custos cadastrados. Pedidos do periodo
+                  usam a data de entrega. Recebidos usam a data de entrada/recebimento.
                 </p>
               </div>
 
@@ -1651,7 +1656,10 @@ export default function FinanceiroPage() {
                   type="search"
                   placeholder="Buscar por descrição..."
                   value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value)
+                    setCurrentPage(1)
+                  }}
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-3 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
@@ -1664,9 +1672,10 @@ export default function FinanceiroPage() {
               <select
                 id="type-filter"
                 value={typeFilter}
-                onChange={(event) =>
+                onChange={(event) => {
                   setTypeFilter(event.target.value as 'todos' | TransactionType)
-                }
+                  setCurrentPage(1)
+                }}
                 className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
               >
                 <option value="todos">Todos</option>
@@ -1682,7 +1691,10 @@ export default function FinanceiroPage() {
               <select
                 id="category-filter"
                 value={categoryFilter}
-                onChange={(event) => setCategoryFilter(event.target.value)}
+                onChange={(event) => {
+                  setCategoryFilter(event.target.value)
+                  setCurrentPage(1)
+                }}
                 className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
               >
                 <option value="todas">Todas categorias</option>
