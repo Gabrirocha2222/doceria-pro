@@ -370,6 +370,39 @@ function getEffectiveSalePrice(recipe: Recipe) {
   return parseNumericValue(recipe.sale_price ?? recipe.suggested_price)
 }
 
+function getRecipeCategoryLabel(recipe: Recipe) {
+  return recipe.category?.trim() || 'Sem categoria'
+}
+
+function compareRecipeCategory(firstCategory: string, secondCategory: string) {
+  if (firstCategory === secondCategory) return 0
+  if (firstCategory.toLowerCase() === 'kits') return -1
+  if (secondCategory.toLowerCase() === 'kits') return 1
+
+  return firstCategory.localeCompare(secondCategory, 'pt-BR')
+}
+
+function groupRecipesForSelect(recipes: Recipe[]) {
+  const groupedRecipes = new Map<string, Recipe[]>()
+
+  recipes.forEach((recipe) => {
+    const category = getRecipeCategoryLabel(recipe)
+    const currentRecipes = groupedRecipes.get(category) ?? []
+    groupedRecipes.set(category, [...currentRecipes, recipe])
+  })
+
+  return Array.from(groupedRecipes.entries())
+    .sort(([firstCategory], [secondCategory]) =>
+      compareRecipeCategory(firstCategory, secondCategory)
+    )
+    .map(([category, categoryRecipes]) => ({
+      category,
+      recipes: [...categoryRecipes].sort((firstRecipe, secondRecipe) =>
+        firstRecipe.name.localeCompare(secondRecipe.name, 'pt-BR')
+      ),
+    }))
+}
+
 function normalizeCostUnit(value: string | null) {
   return value === 'cento' || value === '100_unidades' ? 'cento' : 'unidade'
 }
@@ -932,6 +965,8 @@ export default function EditarPedidoPage() {
   const recipeById = useMemo(() => {
     return new Map(recipes.map((recipe) => [recipe.id, recipe]))
   }, [recipes])
+
+  const recipeSelectGroups = useMemo(() => groupRecipesForSelect(recipes), [recipes])
 
   const kitItemsByKitId = useMemo(() => groupByKitId(kitItems), [kitItems])
   const kitCategoryComponentsByKitId = useMemo(
@@ -2981,10 +3016,14 @@ export default function EditarPedidoPage() {
                             className={inputClass}
                           >
                             {!item.recipe_id && <option value="">Produto antigo/customizado</option>}
-                            {recipes.map((recipe) => (
-                              <option key={recipe.id} value={recipe.id}>
-                                {recipe.name} {recipe.product_type === 'kit' ? '(kit)' : ''}
-                              </option>
+                            {recipeSelectGroups.map((group) => (
+                              <optgroup key={group.category} label={group.category}>
+                                {group.recipes.map((recipe) => (
+                                  <option key={recipe.id} value={recipe.id}>
+                                    {recipe.name}
+                                  </option>
+                                ))}
+                              </optgroup>
                             ))}
                           </select>
                         </div>

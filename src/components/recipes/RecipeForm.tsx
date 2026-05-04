@@ -57,6 +57,9 @@ type Ingredient = {
   id: string
   name: string
   usage_unit: string | null
+  purchase_unit?: string | null
+  unit?: string | null
+  stock_unit?: string | null
   cost_per_unit: number | null
 }
 
@@ -73,13 +76,6 @@ type UnitDefinition = {
 }
 
 type NumericValue = number | string | null | undefined
-
-type SupabaseErrorLike = {
-  message?: string
-  details?: string
-  hint?: string
-  code?: string
-}
 
 type RecipeRecord = {
   id: string
@@ -233,8 +229,12 @@ const unitDefinitions: Record<string, UnitDefinition> = {
   grama: { kind: 'weight', factor: 1 },
   gramas: { kind: 'weight', factor: 1 },
   kg: { kind: 'weight', factor: 1000 },
+  kilogram: { kind: 'weight', factor: 1000 },
+  kilogramas: { kind: 'weight', factor: 1000 },
   kilo: { kind: 'weight', factor: 1000 },
   quilo: { kind: 'weight', factor: 1000 },
+  quilograma: { kind: 'weight', factor: 1000 },
+  quilogramas: { kind: 'weight', factor: 1000 },
   kilos: { kind: 'weight', factor: 1000 },
   quilos: { kind: 'weight', factor: 1000 },
   ml: { kind: 'volume', factor: 1 },
@@ -278,6 +278,33 @@ function normalizeProductType(value: string): ProductType {
   if (value === 'outsourced' || value === 'Terceirizado') return 'outsourced'
 
   return 'simple'
+}
+function getDefaultRecipeUsageUnit(ingredient: Ingredient | null | undefined) {
+  const unit =
+    ingredient?.usage_unit?.trim() ||
+    ingredient?.purchase_unit?.trim() ||
+    ingredient?.unit?.trim() ||
+    ingredient?.stock_unit?.trim()
+
+  if (!unit) return 'unidade'
+
+  const normalizedUnit = normalizeUnit(unit)
+
+  if (
+    ['kg', 'quilo', 'quilos', 'kilogram', 'kilogramas', 'quilograma', 'quilogramas'].includes(
+      normalizedUnit
+    )
+  ) {
+    return 'g'
+  }
+
+  if (['litro', 'litros', 'l'].includes(normalizedUnit)) return 'ml'
+  if (['unidade', 'unidades', 'un'].includes(normalizedUnit)) return 'unidade'
+  if (['pacote', 'pacotes'].includes(normalizedUnit)) return 'pacote'
+  if (normalizedUnit === 'g') return 'g'
+  if (normalizedUnit === 'ml') return 'ml'
+
+  return unit
 }
 function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
@@ -436,7 +463,11 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
         supplier_id: quickIngredientForm.supplier_id || null
       }
       
-      const { data, error } = await supabase.from('ingredients').insert([payload]).select('id, name, usage_unit, cost_per_unit').single()
+      const { data, error } = await supabase
+        .from('ingredients')
+        .insert([payload])
+        .select('id, name, usage_unit, purchase_unit, stock_unit, cost_per_unit')
+        .single()
       
       if (error) {
         console.error('Erro ao criar ingrediente rápido:', {
@@ -455,10 +486,11 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
         
         if (quickIngredientTargetLocalId) {
           updateRecipeIngredient(quickIngredientTargetLocalId, 'ingredient_id', data.id)
-          const target = recipeIngredients.find(r => r.localId === quickIngredientTargetLocalId)
-          if (target && !target.unit) {
-             updateRecipeIngredient(quickIngredientTargetLocalId, 'unit', usage_unit.trim())
-          }
+          updateRecipeIngredient(
+            quickIngredientTargetLocalId,
+            'unit',
+            getDefaultRecipeUsageUnit(data as Ingredient)
+          )
         }
       }
       
@@ -509,7 +541,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
         const { data, error: ingredientsError } = await supabase
           .from('ingredients')
-          .select('id, name, usage_unit, cost_per_unit')
+          .select('id, name, usage_unit, purchase_unit, stock_unit, cost_per_unit')
           .eq('user_id', user.id)
           .order('name', { ascending: true })
 
@@ -926,7 +958,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
         localId: createLocalId(),
         ingredient_id: firstIngredient.id,
         quantity: '1',
-        unit: firstIngredient.usage_unit || 'unidade',
+        unit: getDefaultRecipeUsageUnit(firstIngredient),
       },
     ])
   }
@@ -946,7 +978,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
           return {
             ...item,
             ingredient_id: value,
-            unit: ingredient?.usage_unit || item.unit,
+            unit: getDefaultRecipeUsageUnit(ingredient) || item.unit,
           }
         }
 
@@ -2483,7 +2515,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
                             onChange={(event) =>
                               updateRecipeIngredient(item.localId, 'unit', event.target.value)
                             }
-                            placeholder={selectedIngredient?.usage_unit || 'unidade'}
+                            placeholder={getDefaultRecipeUsageUnit(selectedIngredient)}
                             className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                           />
                         </div>

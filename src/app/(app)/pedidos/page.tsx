@@ -10,15 +10,9 @@ import { Pagination, paginate } from '@/components/Pagination'
 
 type NumericValue = number | string | null | undefined
 
-type SupabaseErrorLike = {
-  message?: string
-  details?: string
-  hint?: string
-  code?: string
-}
-
 type OrderItem = {
   id: string
+  order_id: string
   parent_order_item_id: string | null
   item_name: string | null
   quantity: NumericValue
@@ -29,15 +23,28 @@ type OrderItem = {
 
 type RecurringOccurrence = {
   id: string
+  order_id: string
   occurrence_number: number
   status: 'pendente' | 'em_producao' | 'entregue' | 'cancelado'
 }
 
+type Customer = {
+  id: string
+  user_id: string
+  name: string
+  phone: string | null
+  whatsapp: string | null
+  email: string | null
+}
+
 type Order = {
   id: string
-  product_name: string | null
-  delivery_date: string
-  delivery_time: string
+  user_id: string
+  customer_id: string | null
+  order_date: string | null
+  delivery_date: string | null
+  delivery_time: string | null
+  delivery_address?: string | null
   total_value: NumericValue
   deposit_value: NumericValue
   down_payment: NumericValue
@@ -46,15 +53,17 @@ type Order = {
   status: string
   payment_status?: string | null
   created_at: string
+  updated_at?: string | null
   notes?: string | null
   fulfillment_type?: string | null
+  delivery_fee?: NumericValue
+  discount_amount?: NumericValue
+  manual_total?: NumericValue
+  extras_total?: NumericValue
   is_recurring?: boolean | null
+  recurrence_type?: string | null
   recurrence_count?: number | null
-  customers?: {
-    id: string
-    name: string
-    phone: string | null
-  } | null
+  first_occurrence_date?: string | null
   order_items?: OrderItem[]
   recurring_order_occurrences?: RecurringOccurrence[]
 }
@@ -68,7 +77,7 @@ const statusOptions = [
   { id: 'entregue', label: 'Entregue', color: '#7F8C8D' },
   { id: 'cancelado', label: 'Cancelado', color: '#C0392B' },
 ]
-function formatDate(date: string) {
+function formatDate(date: string | null | undefined) {
   if (!date) return 'Sem data'
 
   return new Date(date).toLocaleDateString('pt-BR')
@@ -77,11 +86,6 @@ function formatDate(date: string) {
 function getStatusColor(status: string) {
   const option = statusOptions.find((statusOption) => statusOption.id === status)
   return option?.color || '#999999'
-}
-
-function getStatusLabel(status: string) {
-  const option = statusOptions.find((statusOption) => statusOption.id === status)
-  return option?.label || status
 }
 
 function getMainItems(order: Order) {
@@ -95,7 +99,7 @@ function getOrderSummary(order: Order) {
   const mainItems = getMainItems(order)
 
   if (mainItems.length === 0) {
-    return order.product_name || order.notes || 'Pedido sem itens estruturados'
+    return order.notes || 'Pedido sem itens estruturados'
   }
 
   return mainItems
@@ -114,6 +118,7 @@ function getRecurringProgress(order: Order) {
 
 export default function PedidosPage() {
   const [orders, setOrders] = useState<Order[]>([])
+  const [customerById, setCustomerById] = useState<Record<string, Customer>>({})
   const [selectedStatus, setSelectedStatus] = useState('todos')
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -136,53 +141,127 @@ export default function PedidosPage() {
         throw new Error('Usuária não autenticada')
       }
 
-      const { data, error: ordersError } = await supabase
+      const { data: ordersData, error: ordersError } = await supabase
         .from('orders')
         .select(`
           id,
-          product_name,
-          status,
-          payment_status,
-          created_at,
+          user_id,
+          customer_id,
+          order_date,
           delivery_date,
           delivery_time,
+          status,
+          payment_status,
           total_value,
-          down_payment,
           deposit_value,
+          delivery_address,
+          notes,
+          created_at,
+          updated_at,
+          fulfillment_type,
+          delivery_fee,
+          down_payment,
           remaining_amount,
           remaining_payment_date,
-          fulfillment_type,
+          discount_amount,
+          manual_total,
+          extras_total,
           is_recurring,
+          recurrence_type,
           recurrence_count,
-          customers (
-            id,
-            name,
-            phone
-          ),
-          order_items (
-            id,
-            parent_order_item_id,
-            item_name,
-            quantity,
-            unit_price,
-            subtotal,
-            notes
-          ),
-          recurring_order_occurrences (
-            id,
-            occurrence_number,
-            status
-          )
+          first_occurrence_date
         `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
       if (ordersError) {
-        logSupabaseError('Erro Supabase orders select:', ordersError)
+        console.error('Erro Supabase orders select:', {
+          message: ordersError?.message,
+          details: ordersError?.details,
+          hint: ordersError?.hint,
+          code: ordersError?.code,
+          fullError: ordersError,
+          stringified: JSON.stringify(ordersError, null, 2),
+        })
         throw ordersError
       }
 
-      setOrders((data ?? []) as unknown as Order[])
+      const orders = (ordersData ?? []) as Order[]
+      const orderIds = orders.map((order) => order.id)
+      const customerIds = Array.from(
+        new Set(orders.map((order) => order.customer_id).filter((id): id is string => Boolean(id)))
+      )
+      const nextCustomerById: Record<string, Customer> = {}
+      let orderItems: OrderItem[] = []
+      let recurringOccurrences: RecurringOccurrence[] = []
+
+      if (customerIds.length > 0) {
+        const { data: customersData, error: customersError } = await supabase
+          .from('customers')
+          .select('id, user_id, name, phone, whatsapp, email')
+          .eq('user_id', user.id)
+          .in('id', customerIds)
+
+        if (customersError) {
+          logSupabaseError('Erro Supabase customers select:', customersError)
+        } else {
+          ;((customersData ?? []) as Customer[]).forEach((customer) => {
+            nextCustomerById[customer.id] = customer
+          })
+        }
+      }
+
+      if (orderIds.length > 0) {
+        const { data: orderItemsData, error: orderItemsError } = await supabase
+          .from('order_items')
+          .select('id, order_id, parent_order_item_id, item_name, quantity, unit_price, subtotal, notes')
+          .eq('user_id', user.id)
+          .in('order_id', orderIds)
+
+        if (orderItemsError) {
+          logSupabaseError('Erro Supabase order_items select:', orderItemsError)
+        } else {
+          orderItems = (orderItemsData ?? []) as OrderItem[]
+        }
+
+        const { data: recurringData, error: recurringError } = await supabase
+          .from('recurring_order_occurrences')
+          .select('id, order_id, occurrence_number, status')
+          .eq('user_id', user.id)
+          .in('order_id', orderIds)
+
+        if (recurringError) {
+          logSupabaseError('Erro Supabase recurring_order_occurrences select:', recurringError)
+        } else {
+          recurringOccurrences = (recurringData ?? []) as RecurringOccurrence[]
+        }
+      }
+
+      const orderItemsByOrderId = orderItems.reduce<Map<string, OrderItem[]>>((groups, item) => {
+        const currentItems = groups.get(item.order_id) ?? []
+        groups.set(item.order_id, [...currentItems, item])
+
+        return groups
+      }, new Map())
+      const recurringByOrderId = recurringOccurrences.reduce<Map<string, RecurringOccurrence[]>>(
+        (groups, occurrence) => {
+          const currentOccurrences = groups.get(occurrence.order_id) ?? []
+          groups.set(occurrence.order_id, [...currentOccurrences, occurrence])
+
+          return groups
+        },
+        new Map()
+      )
+
+      setCustomerById(nextCustomerById)
+      setOrders(
+        orders.map((order) => ({
+          ...order,
+          delivery_date: order.delivery_date ?? order.order_date,
+          order_items: orderItemsByOrderId.get(order.id) ?? [],
+          recurring_order_occurrences: recurringByOrderId.get(order.id) ?? [],
+        }))
+      )
     } catch (err) {
       console.error('Erro ao carregar pedidos:', err)
       setError('Falha ao carregar pedidos')
@@ -199,8 +278,6 @@ export default function PedidosPage() {
     return () => window.clearTimeout(timeoutId)
   }, [loadOrders])
 
-  useEffect(() => { setCurrentPage(1) }, [selectedStatus, searchQuery])
-
   const filteredOrders = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -208,18 +285,19 @@ export default function PedidosPage() {
       if (selectedStatus !== 'todos' && order.status !== selectedStatus) return false
       if (!query) return true
 
+      const customerName = order.customer_id ? customerById[order.customer_id]?.name ?? '' : ''
       const itemNames = (order.order_items ?? [])
         .map((item) => item.item_name ?? '')
         .join(' ')
         .toLowerCase()
 
       return (
-        order.customers?.name?.toLowerCase().includes(query) ||
-        order.product_name?.toLowerCase().includes(query) ||
+        customerName.toLowerCase().includes(query) ||
+        order.notes?.toLowerCase().includes(query) ||
         itemNames.includes(query)
       )
     })
-  }, [orders, searchQuery, selectedStatus])
+  }, [customerById, orders, searchQuery, selectedStatus])
 
   const { paged: pagedOrders, totalPages } = paginate(filteredOrders, currentPage)
 
@@ -258,8 +336,8 @@ export default function PedidosPage() {
 
       let updatePayload: Partial<Order> = { status: nextStatus }
       
-      const totalValue = parseNumericValue(order.total_value)
-      const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+      const totalValue = parseNumericValue(order.total_value ?? 0)
+      const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value ?? 0)
       const remainingValue = order.remaining_amount == null
         ? Math.max(totalValue - depositValue, 0)
         : parseNumericValue(order.remaining_amount)
@@ -308,8 +386,8 @@ export default function PedidosPage() {
     const order = orders.find((o) => o.id === orderId)
     if (!order) return
 
-    const totalValue = parseNumericValue(order.total_value)
-    const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+    const totalValue = parseNumericValue(order.total_value ?? 0)
+    const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value ?? 0)
     const remainingValue = order.remaining_amount == null
       ? Math.max(totalValue - depositValue, 0)
       : parseNumericValue(order.remaining_amount)
@@ -398,7 +476,10 @@ export default function PedidosPage() {
                 <button
                   key={option.id}
                   type="button"
-                  onClick={() => setSelectedStatus(option.id)}
+                  onClick={() => {
+                    setSelectedStatus(option.id)
+                    setCurrentPage(1)
+                  }}
                   className={`whitespace-nowrap rounded-lg px-4 py-2 font-medium transition-colors ${
                     selectedStatus === option.id
                       ? 'bg-[#C0392B] text-white'
@@ -421,7 +502,10 @@ export default function PedidosPage() {
               type="text"
               placeholder="Buscar por cliente, pedido ou item..."
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => {
+                setSearchQuery(event.target.value)
+                setCurrentPage(1)
+              }}
               className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-2 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#C0392B]"
             />
           </div>
@@ -457,8 +541,16 @@ export default function PedidosPage() {
               const hasStructuredItems = mainItems.length > 0
               const recurringProgress = getRecurringProgress(order)
               const isUpdating = updatingOrderId === order.id
-              const totalValue = parseNumericValue(order.total_value)
-              const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value)
+              const customer = order.customer_id ? customerById[order.customer_id] : undefined
+              const customerName = customer?.name?.trim() || 'Cliente não informado'
+              const customerInitials = customer?.name
+                ?.split(' ')
+                .map((namePart) => namePart[0])
+                .join('')
+                .toUpperCase()
+                .slice(0, 2)
+              const totalValue = parseNumericValue(order.total_value ?? 0)
+              const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value ?? 0)
               const remainingValue = order.remaining_amount == null
                 ? Math.max(totalValue - depositValue, 0)
                 : parseNumericValue(order.remaining_amount)
@@ -474,21 +566,16 @@ export default function PedidosPage() {
                   >
                     <div className="flex min-w-0 flex-1 items-start gap-4">
                       <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
-                        {order.customers?.name
-                          ?.split(' ')
-                          .map((namePart) => namePart[0])
-                          .join('')
-                          .toUpperCase()
-                          .slice(0, 2)}
+                        {customerInitials}
                       </div>
 
                       <div className="min-w-0">
                         <p className="font-semibold text-[#1A0A08]">
-                          {order.customers?.name || 'Cliente não informado'}
+                          {customerName}
                         </p>
                         <p className="truncate text-sm text-[#999999]">{getOrderSummary(order)}</p>
                         <p className="mt-1 text-xs text-[#999999]">
-                          {formatDate(order.delivery_date)} as {order.delivery_time}
+                          {formatDate(order.delivery_date ?? order.order_date)} as {order.delivery_time}
                         </p>
                         {hasStructuredItems && (
                           <div className="mt-2 flex items-center gap-2 text-xs text-[#1A0A08]">
