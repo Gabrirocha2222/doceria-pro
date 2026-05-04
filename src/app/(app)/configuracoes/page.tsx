@@ -253,6 +253,11 @@ function normalizeName(value: string) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function createDefaultSettingsPayload(userId: string) {
   return {
     user_id: userId,
@@ -553,7 +558,7 @@ export default function ConfiguracoesPage() {
   }
 
   async function addCategory() {
-    const name = newCategoryName.trim()
+    const name = normalizeUpper(newCategoryName)
     if (!name || !currentUserId) return
 
     const hasDuplicate = categories.some(

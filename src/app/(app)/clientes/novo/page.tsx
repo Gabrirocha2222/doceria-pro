@@ -35,6 +35,11 @@ const initialForm: CustomerForm = {
 function optionalDate(value: string) {
   return value || null
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 export default function NovaClientePage() {
   const [form, setForm] = useState<CustomerForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -83,7 +88,7 @@ export default function NovaClientePage() {
       const { error: insertError } = await supabase.from('customers').insert([
         {
           user_id: user.id,
-          name: form.name.trim(),
+          name: normalizeUpper(form.name),
           phone: optionalText(form.phone),
           whatsapp: optionalText(form.whatsapp),
           address: optionalText(form.address),

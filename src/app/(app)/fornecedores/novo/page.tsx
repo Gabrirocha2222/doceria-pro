@@ -22,6 +22,11 @@ const initialForm: SupplierForm = {
   address: '',
   notes: '',
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 export default function NovoFornecedorPage() {
   const [form, setForm] = useState<SupplierForm>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -62,7 +67,7 @@ export default function NovoFornecedorPage() {
       const { error: insertError } = await supabase.from('suppliers').insert([
         {
           user_id: user.id,
-          name: form.name.trim(),
+          name: normalizeUpper(form.name),
           phone: optionalText(form.phone),
           whatsapp: optionalText(form.whatsapp),
           address: optionalText(form.address),

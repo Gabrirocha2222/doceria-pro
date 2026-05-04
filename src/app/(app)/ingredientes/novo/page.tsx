@@ -77,6 +77,10 @@ function getUnitDefinition(unit: string) {
   return unitDefinitions[normalizeUnit(unit)]
 }
 
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function calculateCostPerUnit(
   purchasePrice: number,
   purchaseQuantity: number,
@@ -232,8 +236,8 @@ export default function NovoIngredientePage() {
       const { error: insertError } = await supabase.from('ingredients').insert([
         {
           user_id: user.id,
-          name: form.name.trim(),
-          category: form.category,
+          name: normalizeUpper(form.name),
+          category: normalizeUpper(form.category),
           purchase_unit: form.purchase_unit.trim(),
           usage_unit: form.usage_unit.trim(),
           purchase_quantity: purchaseQuantity,

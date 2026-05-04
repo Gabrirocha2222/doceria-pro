@@ -58,6 +58,11 @@ function getWhatsAppHref(whatsapp: string | null) {
 
   return `https://wa.me/${digits}`
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function buildEditForm(supplier: Supplier): SupplierEditForm {
   return {
     name: supplier.name,
@@ -176,7 +181,7 @@ export default function FornecedoresPage() {
       }
 
       const updatedSupplier = {
-        name: editForm.name.trim(),
+        name: normalizeUpper(editForm.name),
         phone: optionalText(editForm.phone),
         whatsapp: optionalText(editForm.whatsapp),
         address: optionalText(editForm.address),

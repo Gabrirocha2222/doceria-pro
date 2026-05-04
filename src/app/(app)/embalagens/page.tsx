@@ -60,6 +60,11 @@ function parseNumeric(value: number | string | null | undefined) {
 function getCategoryLabel(category: string | null) {
   return category?.trim() || 'Sem categoria'
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function buildEditForm(packaging: Packaging): PackagingEditForm {
   return {
     name: packaging.name,
@@ -207,14 +212,16 @@ export default function EmbalagensPage() {
       }
 
       const updatedPackaging = {
-        name: editForm.name.trim(),
-        category: optionalText(editForm.category),
+        name: normalizeUpper(editForm.name),
+        category: editForm.category.trim() ? normalizeUpper(editForm.category) : null,
         package_quantity: parseNumeric(editForm.package_quantity),
         unit: editForm.unit.trim() || 'unidade',
         package_cost: parseNumeric(editForm.package_cost),
         cost_per_unit: parseNumeric(editForm.cost_per_unit),
         capacity: editForm.capacity.trim() ? parseNumeric(editForm.capacity) : null,
-        capacity_unit: optionalText(editForm.capacity_unit),
+        capacity_unit: editForm.capacity_unit.trim()
+          ? normalizeUpper(editForm.capacity_unit)
+          : null,
         notes: optionalText(editForm.notes),
       }
 

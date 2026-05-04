@@ -110,6 +110,10 @@ function getInitials(name: string) {
   return initials || '?'
 }
 
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function formatBirthday(birthday: string | null | undefined) {
   if (!birthday) return 'Não informado'
 
@@ -273,8 +277,6 @@ export default function ClientesPage() {
     }
   }, [supabase])
 
-  useEffect(() => { setCurrentPage(1) }, [searchQuery])
-
   const filteredCustomers = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -428,7 +430,7 @@ export default function ClientesPage() {
         | 'satisfaction'
         | 'notes_private'
       > = {
-        name: editForm.name.trim(),
+        name: normalizeUpper(editForm.name),
         phone: optionalText(editForm.phone),
         whatsapp: optionalText(editForm.whatsapp),
         address: optionalText(editForm.address),
@@ -555,7 +557,10 @@ export default function ClientesPage() {
               type="search"
               placeholder="Buscar por nome..."
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => {
+                setSearchQuery(event.target.value)
+                setCurrentPage(1)
+              }}
               className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-3 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
             />
           </div>

@@ -407,6 +407,10 @@ function normalizeCostUnit(value: string | null) {
   return value === 'cento' || value === '100_unidades' ? 'cento' : 'unidade'
 }
 
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function calculateSupplierEstimatedCost(recipe: Recipe, quantity: number) {
   const supplierCost = parseNumericValue(recipe.supplier_cost)
   const supplierCostUnit = normalizeCostUnit(recipe.supplier_cost_unit)
@@ -484,7 +488,7 @@ function parseFlavorItems(value: unknown): FlavorItem[] {
 function buildFlavorPayload(flavors: FlavorItem[]): FlavorPayload | null {
   const payload = flavors
     .map((flavor) => ({
-      name: flavor.name.trim(),
+      name: normalizeUpper(flavor.name),
       quantity: parseDecimal(flavor.quantity),
     }))
     .filter((flavor) => flavor.name && flavor.quantity > 0)
@@ -2260,9 +2264,10 @@ export default function EditarPedidoPage() {
   }
 
   async function resolveCustomerId(userId: string) {
-    const customerName = form.customer_name.trim()
+    const customerLookupName = form.customer_name.trim()
+    const customerName = normalizeUpper(form.customer_name)
     const selected = customers.find(
-      (customer) => customer.name.trim().toLowerCase() === customerName.toLowerCase()
+      (customer) => customer.name.trim().toLowerCase() === customerLookupName.toLowerCase()
     )
 
     if (selected) {
@@ -2389,7 +2394,7 @@ export default function EditarPedidoPage() {
 
     const details: SupplierOrderDetails = {
       flavor_details: params.flavorDetails,
-      customer_name: form.customer_name.trim(),
+      customer_name: normalizeUpper(form.customer_name),
       source_item: params.title,
       ...(params.parentKitName ? { parent_kit: params.parentKitName } : {}),
     }
@@ -2600,7 +2605,7 @@ export default function EditarPedidoPage() {
     const extrasData = orderExtras.map((extra) => ({
       user_id: userId,
       order_id: orderId,
-      name: extra.name.trim(),
+      name: normalizeUpper(extra.name),
       amount: parseDecimal(extra.amount),
       notes: optionalText(extra.notes),
     }))
@@ -2644,9 +2649,9 @@ export default function EditarPedidoPage() {
 
     if (!cakeTopper.enabled) return
 
-    const childName = optionalText(cakeTopper.child_name)
+    const childName = cakeTopper.child_name.trim() ? normalizeUpper(cakeTopper.child_name) : null
     const age = optionalText(cakeTopper.age)
-    const theme = optionalText(cakeTopper.theme)
+    const theme = cakeTopper.theme.trim() ? normalizeUpper(cakeTopper.theme) : null
     const photoUrl = optionalText(cakeTopper.photo_url)
     const cost = optionalMoney(cakeTopper.cost)
     const chargedAmount = optionalMoney(cakeTopper.charged_amount)

@@ -356,6 +356,10 @@ function normalizeCostUnit(value: string | null) {
     .replace(/[\u0300-\u036f]/g, '')
 }
 
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function calculateSupplierEstimatedCost(recipe: Recipe, quantity: number) {
   const supplierCost = parseNumericValue(recipe.supplier_cost)
   const supplierCostUnit = normalizeCostUnit(recipe.supplier_cost_unit)
@@ -371,7 +375,7 @@ function calculateSupplierEstimatedCost(recipe: Recipe, quantity: number) {
 function buildFlavorPayload(flavors: FlavorItem[]): FlavorPayload | null {
   const payload = flavors
     .map((flavor) => ({
-      name: flavor.name.trim(),
+      name: normalizeUpper(flavor.name),
       quantity: parseDecimal(flavor.quantity),
     }))
     .filter((flavor) => flavor.name || flavor.quantity > 0)
@@ -1716,7 +1720,7 @@ export default function NovoPedidoPage() {
 
     const details: SupplierOrderDetails = {
       flavor_details: params.flavorDetails,
-      customer_name: form.customer_name.trim(),
+      customer_name: normalizeUpper(form.customer_name),
       source_item: params.title,
       ...(params.parentKitName ? { parent_kit: params.parentKitName } : {}),
     }
@@ -1749,9 +1753,9 @@ export default function NovoPedidoPage() {
   async function createCakeTopperForOrder(userId: string, orderId: string) {
     if (!cakeTopper.enabled) return
 
-    const childName = optionalText(cakeTopper.child_name)
+    const childName = cakeTopper.child_name.trim() ? normalizeUpper(cakeTopper.child_name) : null
     const age = optionalText(cakeTopper.age)
-    const theme = optionalText(cakeTopper.theme)
+    const theme = cakeTopper.theme.trim() ? normalizeUpper(cakeTopper.theme) : null
     const photoUrl = optionalText(cakeTopper.photo_url)
     const cost = optionalMoney(cakeTopper.cost)
     const chargedAmount = optionalMoney(cakeTopper.charged_amount)
@@ -1868,44 +1872,52 @@ export default function NovoPedidoPage() {
 
       const currentUserId = user.id
       let customerId: string
+      const customerName = normalizeUpper(form.customer_name)
+      const matchingCustomer = customers.find(
+        (customer) => customer.name.trim().toLowerCase() === form.customer_name.trim().toLowerCase()
+      )
 
-      const { data: existingCustomers, error: searchError } = await supabase
-        .from('customers')
-        .select('id')
-        .eq('user_id', currentUserId)
-        .eq('name', form.customer_name.trim())
-        .limit(1)
-
-      if (searchError) {
-        logSupabaseError('Erro Supabase customers select:', searchError)
-        throw searchError
-      }
-
-      if (existingCustomers && existingCustomers.length > 0) {
-        customerId = existingCustomers[0].id
+      if (matchingCustomer) {
+        customerId = matchingCustomer.id
       } else {
-        const { data: newCustomer, error: createCustomerError } = await supabase
+        const { data: existingCustomers, error: searchError } = await supabase
           .from('customers')
-          .insert([
-            {
-              user_id: currentUserId,
-              name: form.customer_name.trim(),
-              phone: optionalText(form.customer_phone),
-            },
-          ])
           .select('id')
-          .single()
+          .eq('user_id', currentUserId)
+          .eq('name', customerName)
+          .limit(1)
 
-        if (createCustomerError) {
-          logSupabaseError('Erro Supabase customers insert:', createCustomerError)
-          throw createCustomerError
+        if (searchError) {
+          logSupabaseError('Erro Supabase customers select:', searchError)
+          throw searchError
         }
 
-        if (!newCustomer?.id) {
-          throw new Error('Cliente criado sem id retornado pelo Supabase')
-        }
+        if (existingCustomers && existingCustomers.length > 0) {
+          customerId = existingCustomers[0].id
+        } else {
+          const { data: newCustomer, error: createCustomerError } = await supabase
+            .from('customers')
+            .insert([
+              {
+                user_id: currentUserId,
+                name: customerName,
+                phone: optionalText(form.customer_phone),
+              },
+            ])
+            .select('id')
+            .single()
 
-        customerId = newCustomer.id
+          if (createCustomerError) {
+            logSupabaseError('Erro Supabase customers insert:', createCustomerError)
+            throw createCustomerError
+          }
+
+          if (!newCustomer?.id) {
+            throw new Error('Cliente criado sem id retornado pelo Supabase')
+          }
+
+          customerId = newCustomer.id
+        }
       }
 
       const orderData = {
@@ -2163,7 +2175,7 @@ export default function NovoPedidoPage() {
         const extrasData = orderExtras.map((extra) => ({
           user_id: currentUserId,
           order_id: orderId,
-          name: extra.name.trim(),
+          name: normalizeUpper(extra.name),
           amount: parseDecimal(extra.amount),
           notes: optionalText(extra.notes),
         }))

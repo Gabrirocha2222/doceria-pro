@@ -71,6 +71,11 @@ function getCategoryLabel(category: string | null) {
   if (!category) return 'Sem categoria'
   return categoryLabels[category] ?? category
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function buildEditForm(ingredient: Ingredient): IngredientEditForm {
   return {
     name: ingredient.name,
@@ -156,8 +161,6 @@ export default function IngredientesPage() {
     }
   }, [supabase])
 
-  useEffect(() => { setCurrentPage(1) }, [searchQuery, supplierFilter])
-
   const filteredIngredients = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
@@ -225,8 +228,8 @@ export default function IngredientesPage() {
       }
 
       const updatedIngredient = {
-        name: editForm.name.trim(),
-        category: optionalText(editForm.category),
+        name: normalizeUpper(editForm.name),
+        category: editForm.category.trim() ? normalizeUpper(editForm.category) : null,
         purchase_unit: optionalText(editForm.purchase_unit),
         purchase_quantity: parseDecimal(editForm.purchase_quantity),
         purchase_price: parseDecimal(editForm.purchase_price),
@@ -350,7 +353,10 @@ export default function IngredientesPage() {
                   type="search"
                   placeholder="Buscar por nome..."
                   value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value)
+                    setCurrentPage(1)
+                  }}
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white py-3 pl-10 pr-4 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 />
               </div>
@@ -363,7 +369,10 @@ export default function IngredientesPage() {
               <select
                 id="supplier-filter"
                 value={supplierFilter}
-                onChange={(event) => setSupplierFilter(event.target.value)}
+                onChange={(event) => {
+                  setSupplierFilter(event.target.value)
+                  setCurrentPage(1)
+                }}
                 className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
               >
                 <option value="">Todos os fornecedores</option>

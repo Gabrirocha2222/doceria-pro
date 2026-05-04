@@ -44,6 +44,11 @@ function parseOptionalDecimal(value: string) {
 
   return Number.isFinite(parsed) ? parsed : null
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function calculateCostPerUnit(packageCost: number, packageQuantity: number) {
   if (packageCost <= 0 || packageQuantity <= 0) return 0
 
@@ -115,14 +120,14 @@ export default function NovaEmbalagemPage() {
       const { error: insertError } = await supabase.from('packaging').insert([
         {
           user_id: user.id,
-          name: form.name.trim(),
-          category: form.category,
+          name: normalizeUpper(form.name),
+          category: normalizeUpper(form.category),
           package_quantity: packageQuantity,
           unit: form.unit.trim(),
           package_cost: packageCost,
           cost_per_unit: costPerUnit,
           capacity,
-          capacity_unit: optionalText(form.capacity_unit),
+          capacity_unit: form.capacity_unit.trim() ? normalizeUpper(form.capacity_unit) : null,
           notes: optionalText(form.notes),
         },
       ])

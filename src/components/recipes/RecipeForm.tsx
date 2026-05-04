@@ -197,22 +197,22 @@ type KitFlexibleGroupItem = {
 }
 
 const categoryOptions = [
-  'Bolos',
-  'Tortas',
-  'Docinhos',
-  'Salgados',
-  'Bebidas',
-  'Sobremesas',
-  'Outros',
+  'BOLOS',
+  'TORTAS',
+  'DOCINHOS',
+  'SALGADOS',
+  'BEBIDAS',
+  'SOBREMESAS',
+  'OUTROS',
 ]
 
 const kitCategoryOptions = [
-  'Bolos',
-  'Doces tradicionais',
-  'Doces finos',
-  'Salgados tradicionais',
-  'Salgados finos',
-  'Outros',
+  'BOLOS',
+  'DOCES TRADICIONAIS',
+  'DOCES FINOS',
+  'SALGADOS TRADICIONAIS',
+  'SALGADOS FINOS',
+  'OUTROS',
 ]
 
 const supplierCostUnitOptions = ['unidade', 'cento', 'kg', 'pedido', 'outro']
@@ -259,7 +259,7 @@ const unitDefinitions: Record<string, UnitDefinition> = {
 
 const initialForm: RecipeForm = {
   name: '',
-  category: 'Bolos',
+  category: 'BOLOS',
   product_type: 'simple',
   is_third_party: 'nao',
   supplier_id: '',
@@ -279,6 +279,11 @@ function normalizeProductType(value: string): ProductType {
 
   return 'simple'
 }
+
+function normalizeUpper(value: string) {
+  return value.trim().toLocaleUpperCase('pt-BR')
+}
+
 function getDefaultRecipeUsageUnit(ingredient: Ingredient | null | undefined) {
   const unit =
     ingredient?.usage_unit?.trim() ||
@@ -449,8 +454,10 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
       
       const payload = {
         user_id: user.id,
-        name: name.trim(),
-        category: optionalText(quickIngredientForm.category),
+        name: normalizeUpper(name),
+        category: quickIngredientForm.category.trim()
+          ? normalizeUpper(quickIngredientForm.category)
+          : null,
         purchase_unit: purchase_unit.trim(),
         purchase_quantity: pq,
         purchase_price: pp,
@@ -711,12 +718,14 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
           loadedKitFlexibleGroups = flexibleGroups.map((group) => ({
             localId: group.id,
-            name: group.name ?? '',
+            name: group.name ? normalizeUpper(group.name) : '',
             total_quantity: toInputValue(group.total_quantity),
             notes: group.notes ?? '',
             categories: (categoriesByGroupId.get(group.id) ?? []).map((categoryItem) => ({
               localId: createLocalId(),
-              category: categoryItem.category ?? kitCategoryOptions[0],
+              category: categoryItem.category
+                ? normalizeUpper(categoryItem.category)
+                : kitCategoryOptions[0],
               default_quantity: toInputValue(categoryItem.default_quantity),
             })),
           }))
@@ -739,7 +748,9 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
 
             setForm({
               name: loadedRecipe.name ?? '',
-              category: loadedRecipe.category || 'Bolos',
+              category: loadedRecipe.category
+                ? normalizeUpper(loadedRecipe.category)
+                : categoryOptions[0],
               product_type: isThirdPartyRecipe ? 'outsourced' : productType,
               is_third_party: isThirdPartyRecipe ? 'sim' : 'nao',
               supplier_id: loadedRecipe.supplier_id ?? '',
@@ -787,7 +798,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
             setKitCategoryComponents(
               loadedKitCategoryComponents.map((item) => ({
                 localId: createLocalId(),
-                category: item.category ?? kitCategoryOptions[0],
+                category: item.category ? normalizeUpper(item.category) : kitCategoryOptions[0],
                 quantity: toInputValue(item.quantity),
                 notes: item.notes ?? '',
               }))
@@ -1131,12 +1142,12 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
     return [
       {
         localId: createLocalId(),
-        category: 'Doces tradicionais',
+        category: 'DOCES TRADICIONAIS',
         default_quantity: '50',
       },
       {
         localId: createLocalId(),
-        category: 'Salgados tradicionais',
+        category: 'SALGADOS TRADICIONAIS',
         default_quantity: '50',
       },
     ]
@@ -1147,7 +1158,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
       ...currentGroups,
       {
         localId: createLocalId(),
-        name: 'Doces e salgados',
+        name: 'DOCES E SALGADOS',
         total_quantity: '100',
         notes: '',
         categories: buildDefaultFlexibleGroupCategories(),
@@ -1365,8 +1376,8 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
       const productType: ProductType = isSimpleThirdParty ? 'outsourced' : form.product_type
       const recipePayload = {
         user_id: user.id,
-        name: form.name.trim(),
-        category: form.category,
+        name: normalizeUpper(form.name),
+        category: normalizeUpper(form.category),
         product_type: productType,
         is_third_party: isSimpleThirdParty,
         supplier_id: isSimpleThirdParty ? optionalText(form.supplier_id) : null,
@@ -1515,7 +1526,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
           const categoryComponentsPayload = kitCategoryComponents.map((item) => ({
             user_id: user.id,
             kit_recipe_id: savedRecipeId,
-            category: item.category.trim(),
+            category: normalizeUpper(item.category),
             quantity: parseDecimal(item.quantity),
             notes: optionalText(item.notes),
           }))
@@ -1537,7 +1548,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
               {
                 user_id: user.id,
                 kit_recipe_id: savedRecipeId,
-                name: group.name.trim(),
+                name: normalizeUpper(group.name),
                 total_quantity: parseDecimal(group.total_quantity),
                 notes: optionalText(group.notes),
               },
@@ -1557,7 +1568,7 @@ export default function RecipeForm({ mode = 'create', recipeId }: RecipeFormProp
           const groupCategoriesPayload = group.categories.map((categoryItem, index) => ({
             user_id: user.id,
             flexible_group_id: createdGroup.id,
-            category: categoryItem.category.trim(),
+            category: normalizeUpper(categoryItem.category),
             default_quantity: parseDecimal(categoryItem.default_quantity),
             sort_order: index,
           }))
