@@ -8,6 +8,7 @@ import {
   Boxes,
   CakeSlice,
   CalendarDays,
+  ChefHat,
   ClipboardList,
   DollarSign,
   Home,
@@ -50,6 +51,7 @@ type PrimaryAction =
 const menuItems: MenuItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, id: 'dashboard' },
   { href: '/pedidos', label: 'Pedidos', icon: Package, id: 'pedidos' },
+  { href: '/producao', label: 'Produção', icon: ChefHat, id: 'producao' },
   { href: '/receitas', label: 'Receitas', icon: CakeSlice, id: 'receitas' },
   { href: '/ingredientes', label: 'Ingredientes', icon: Wheat, id: 'ingredientes' },
   { href: '/embalagens', label: 'Embalagens', icon: Boxes, id: 'embalagens' },
@@ -81,6 +83,14 @@ function getPrimaryAction(pathname: string): PrimaryAction {
 
   if (isRoute(pathname, '/pedidos')) {
     return { kind: 'navigate', href: '/pedidos/novo', label: 'Novo pedido' }
+  }
+
+  if (isRoute(pathname, '/producao')) {
+    return {
+      kind: 'notice',
+      label: 'Produção',
+      message: 'Use os filtros da página de produção',
+    }
   }
 
   if (isRoute(pathname, '/ingredientes')) {

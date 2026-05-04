@@ -9,6 +9,7 @@ import { logSupabaseError } from '@/lib/supabase-error'
 import { Pagination, paginate } from '@/components/Pagination'
 
 type NumericValue = number | string | null | undefined
+type DateFilter = 'upcoming' | 'today' | 'week' | 'all' | 'undated' | 'finished'
 
 type OrderItem = {
   id: string
@@ -68,6 +69,25 @@ type Order = {
   recurring_order_occurrences?: RecurringOccurrence[]
 }
 
+type OrderGroup = {
+  id: string
+  title: string
+  subtitle: string
+  tone: 'default' | 'overdue' | 'undated'
+  orders: Order[]
+}
+
+const finalizedStatuses = new Set(['entregue', 'cancelado'])
+
+const dateFilterOptions: { id: DateFilter; label: string }[] = [
+  { id: 'upcoming', label: 'Próximos' },
+  { id: 'today', label: 'Hoje' },
+  { id: 'week', label: 'Esta semana' },
+  { id: 'all', label: 'Todos' },
+  { id: 'undated', label: 'Sem data' },
+  { id: 'finished', label: 'Finalizados' },
+]
+
 const statusOptions = [
   { id: 'todos', label: 'Todos', color: '#1A0A08' },
   { id: 'novo', label: 'Novo', color: '#3498DB' },
@@ -80,7 +100,187 @@ const statusOptions = [
 function formatDate(date: string | null | undefined) {
   if (!date) return 'Sem data'
 
-  return new Date(date).toLocaleDateString('pt-BR')
+  return new Date(`${date}T00:00:00`).toLocaleDateString('pt-BR')
+}
+
+function formatInputDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function parseInputDate(date: string) {
+  return new Date(`${date}T00:00:00`)
+}
+
+function addDays(date: string, days: number) {
+  const parsedDate = parseInputDate(date)
+  parsedDate.setDate(parsedDate.getDate() + days)
+
+  return formatInputDate(parsedDate)
+}
+
+function getWeekEndDate(date: string) {
+  const parsedDate = parseInputDate(date)
+  const dayOfWeek = parsedDate.getDay()
+  const daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek
+
+  return addDays(date, daysUntilSunday)
+}
+
+function getPrimaryOrderDate(order: Order) {
+  return order.delivery_date ?? order.order_date
+}
+
+function isFinalizedOrder(order: Order) {
+  return finalizedStatuses.has(order.status)
+}
+
+function normalizeDeliveryTime(time: string | null | undefined) {
+  return time?.trim() || '99:99'
+}
+
+function compareOrdersBySchedule(firstOrder: Order, secondOrder: Order) {
+  const firstDate = getPrimaryOrderDate(firstOrder)
+  const secondDate = getPrimaryOrderDate(secondOrder)
+
+  if (firstDate && secondDate && firstDate !== secondDate) {
+    return firstDate.localeCompare(secondDate)
+  }
+
+  if (firstDate && !secondDate) return -1
+  if (!firstDate && secondDate) return 1
+
+  const firstTime = normalizeDeliveryTime(firstOrder.delivery_time)
+  const secondTime = normalizeDeliveryTime(secondOrder.delivery_time)
+
+  if (firstTime !== secondTime) return firstTime.localeCompare(secondTime)
+
+  return firstOrder.created_at.localeCompare(secondOrder.created_at)
+}
+
+function getOrderViewRank(order: Order, dateFilter: DateFilter, today: string) {
+  const orderDate = getPrimaryOrderDate(order)
+
+  if (dateFilter === 'upcoming') {
+    if (orderDate && orderDate < today) return 0
+    if (orderDate) return 1
+    return 2
+  }
+
+  return orderDate ? 0 : 1
+}
+
+function compareOrdersForView(
+  firstOrder: Order,
+  secondOrder: Order,
+  dateFilter: DateFilter,
+  today: string
+) {
+  const firstRank = getOrderViewRank(firstOrder, dateFilter, today)
+  const secondRank = getOrderViewRank(secondOrder, dateFilter, today)
+
+  if (firstRank !== secondRank) return firstRank - secondRank
+
+  return compareOrdersBySchedule(firstOrder, secondOrder)
+}
+
+function getDayLabel(date: string, today: string) {
+  if (date === today) {
+    return { title: 'Hoje', subtitle: formatDate(date) }
+  }
+
+  if (date === addDays(today, 1)) {
+    return { title: 'Amanhã', subtitle: formatDate(date) }
+  }
+
+  const parsedDate = parseInputDate(date)
+  const weekday = new Intl.DateTimeFormat('pt-BR', { weekday: 'long' }).format(parsedDate)
+  const formattedDay = new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+  }).format(parsedDate)
+
+  return {
+    title: weekday.charAt(0).toUpperCase() + weekday.slice(1),
+    subtitle: formattedDay,
+  }
+}
+
+function shouldShowOrderForDateFilter(
+  order: Order,
+  dateFilter: DateFilter,
+  today: string,
+  weekEnd: string
+) {
+  const orderDate = getPrimaryOrderDate(order)
+  const isFinalized = isFinalizedOrder(order)
+
+  if (dateFilter === 'all') return true
+  if (dateFilter === 'finished') return isFinalized
+  if (dateFilter === 'undated') return !orderDate && !isFinalized
+  if (isFinalized) return false
+  if (dateFilter === 'upcoming') return true
+  if (!orderDate) return false
+  if (dateFilter === 'today') return orderDate === today
+
+  return orderDate >= today && orderDate <= weekEnd
+}
+
+function groupOrdersByDay(orders: Order[], dateFilter: DateFilter, today: string) {
+  const groups = new Map<string, OrderGroup>()
+
+  orders.forEach((order) => {
+    const orderDate = getPrimaryOrderDate(order)
+    const isOverdue =
+      dateFilter === 'upcoming' &&
+      orderDate !== null &&
+      orderDate < today &&
+      !isFinalizedOrder(order)
+    const groupId = !orderDate ? 'undated' : isOverdue ? 'overdue' : orderDate
+    const existingGroup = groups.get(groupId)
+
+    if (existingGroup) {
+      existingGroup.orders.push(order)
+      return
+    }
+
+    if (!orderDate) {
+      groups.set(groupId, {
+        id: groupId,
+        title: 'Sem data definida',
+        subtitle: 'Pedidos sem entrega ou festa informada',
+        tone: 'undated',
+        orders: [order],
+      })
+      return
+    }
+
+    if (isOverdue) {
+      groups.set(groupId, {
+        id: groupId,
+        title: 'Atrasados',
+        subtitle: 'Pedidos ativos com data anterior a hoje',
+        tone: 'overdue',
+        orders: [order],
+      })
+      return
+    }
+
+    const label = getDayLabel(orderDate, today)
+
+    groups.set(groupId, {
+      id: groupId,
+      title: label.title,
+      subtitle: label.subtitle,
+      tone: 'default',
+      orders: [order],
+    })
+  })
+
+  return Array.from(groups.values())
 }
 
 function getStatusColor(status: string) {
@@ -119,6 +319,7 @@ function getRecurringProgress(order: Order) {
 export default function PedidosPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [customerById, setCustomerById] = useState<Record<string, Customer>>({})
+  const [selectedDateFilter, setSelectedDateFilter] = useState<DateFilter>('upcoming')
   const [selectedStatus, setSelectedStatus] = useState('todos')
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -126,6 +327,8 @@ export default function PedidosPage() {
   const [error, setError] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const supabase = useMemo(() => createClient(), [])
+  const today = useMemo(() => formatInputDate(new Date()), [])
+  const weekEnd = useMemo(() => getWeekEndDate(today), [today])
 
   const loadOrders = useCallback(async () => {
     setIsLoading(true)
@@ -172,7 +375,9 @@ export default function PedidosPage() {
           first_occurrence_date
         `)
         .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
+        .order('delivery_date', { ascending: true, nullsFirst: false })
+        .order('order_date', { ascending: true, nullsFirst: false })
+        .order('delivery_time', { ascending: true, nullsFirst: false })
 
       if (ordersError) {
         console.error('Erro Supabase orders select:', {
@@ -257,7 +462,6 @@ export default function PedidosPage() {
       setOrders(
         orders.map((order) => ({
           ...order,
-          delivery_date: order.delivery_date ?? order.order_date,
           order_items: orderItemsByOrderId.get(order.id) ?? [],
           recurring_order_occurrences: recurringByOrderId.get(order.id) ?? [],
         }))
@@ -281,25 +485,36 @@ export default function PedidosPage() {
   const filteredOrders = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
 
-    return orders.filter((order) => {
-      if (selectedStatus !== 'todos' && order.status !== selectedStatus) return false
-      if (!query) return true
+    return orders
+      .filter((order) => {
+        if (selectedStatus !== 'todos' && order.status !== selectedStatus) return false
+        if (!shouldShowOrderForDateFilter(order, selectedDateFilter, today, weekEnd)) {
+          return false
+        }
+        if (!query) return true
 
-      const customerName = order.customer_id ? customerById[order.customer_id]?.name ?? '' : ''
-      const itemNames = (order.order_items ?? [])
-        .map((item) => item.item_name ?? '')
-        .join(' ')
-        .toLowerCase()
+        const customerName = order.customer_id ? customerById[order.customer_id]?.name ?? '' : ''
+        const itemNames = (order.order_items ?? [])
+          .map((item) => item.item_name ?? '')
+          .join(' ')
+          .toLowerCase()
 
-      return (
-        customerName.toLowerCase().includes(query) ||
-        order.notes?.toLowerCase().includes(query) ||
-        itemNames.includes(query)
+        return (
+          customerName.toLowerCase().includes(query) ||
+          order.notes?.toLowerCase().includes(query) ||
+          itemNames.includes(query)
+        )
+      })
+      .sort((firstOrder, secondOrder) =>
+        compareOrdersForView(firstOrder, secondOrder, selectedDateFilter, today)
       )
-    })
-  }, [customerById, orders, searchQuery, selectedStatus])
+  }, [customerById, orders, searchQuery, selectedDateFilter, selectedStatus, today, weekEnd])
 
   const { paged: pagedOrders, totalPages } = paginate(filteredOrders, currentPage)
+  const orderGroups = useMemo(
+    () => groupOrdersByDay(pagedOrders, selectedDateFilter, today),
+    [pagedOrders, selectedDateFilter, today]
+  )
 
   async function deleteOrder(id: string) {
     if (!confirm('Tem certeza que deseja excluir este pedido?')) return
@@ -442,8 +657,157 @@ export default function PedidosPage() {
     }
   }
 
+  function renderOrderCard(order: Order) {
+    const mainItems = getMainItems(order)
+    const hasStructuredItems = mainItems.length > 0
+    const recurringProgress = getRecurringProgress(order)
+    const isUpdating = updatingOrderId === order.id
+    const customer = order.customer_id ? customerById[order.customer_id] : undefined
+    const customerName = customer?.name?.trim() || 'Cliente não informado'
+    const customerInitials =
+      customer?.name
+        ?.split(' ')
+        .map((namePart) => namePart[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2) || '?'
+    const totalValue = parseNumericValue(order.total_value ?? 0)
+    const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value ?? 0)
+    const remainingValue =
+      order.remaining_amount == null
+        ? Math.max(totalValue - depositValue, 0)
+        : parseNumericValue(order.remaining_amount)
+    const primaryDate = getPrimaryOrderDate(order)
+    const deliveryTime = order.delivery_time?.trim()
+
+    return (
+      <article
+        key={order.id}
+        className="block overflow-hidden rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white transition-shadow hover:shadow-md"
+      >
+        <div
+          className="flex flex-col gap-4 p-4 md:flex-row md:items-center"
+          style={{ borderLeft: `4px solid ${getStatusColor(order.status)}` }}
+        >
+          <div className="flex min-w-0 flex-1 items-start gap-4">
+            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
+              {customerInitials}
+            </div>
+
+            <div className="min-w-0">
+              <p className="font-semibold text-[#1A0A08]">{customerName}</p>
+              <p className="truncate text-sm text-[#999999]">{getOrderSummary(order)}</p>
+              <p className="mt-1 text-xs text-[#999999]">
+                {formatDate(primaryDate)}
+                {deliveryTime ? ` as ${deliveryTime}` : ''}
+              </p>
+              {hasStructuredItems && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-[#1A0A08]">
+                  <Package size={14} className="text-[#C9A84C]" aria-hidden="true" />
+                  <span>
+                    {mainItems.length === 1
+                      ? '1 item estruturado'
+                      : `${mainItems.length} itens estruturados`}
+                  </span>
+                </div>
+              )}
+              {order.is_recurring && (
+                <p className="mt-2 text-xs font-semibold text-[#C0392B]">
+                  {recurringProgress.delivered}/{recurringProgress.total} entregues
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 md:flex-shrink-0">
+            <div className="text-right">
+              <p className="font-bold text-[#1A0A08]">{formatCurrency(totalValue)}</p>
+              {depositValue > 0 ? (
+                <>
+                  <p className="text-xs text-[#C9A84C]">
+                    {formatCurrency(depositValue)} sinal
+                  </p>
+                  <p className="text-xs text-[#999999]">
+                    {formatCurrency(remainingValue)} restante
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-[#999999]">Sem sinal</p>
+              )}
+              {remainingValue > 0 && (
+                <button
+                  type="button"
+                  disabled={isUpdating}
+                  onClick={() => receiveRemainingPayment(order.id)}
+                  className="mt-1 text-xs font-semibold text-[#27AE60] hover:text-[#1E8449] disabled:opacity-50"
+                >
+                  Receber restante
+                </button>
+              )}
+            </div>
+
+            {order.fulfillment_type === 'entrega' && (
+              <div className="rounded-full bg-[#C9A84C] px-2 py-1 text-xs font-semibold text-white">
+                Entrega
+              </div>
+            )}
+
+            {order.is_recurring && (
+              <div className="rounded-full bg-[#FAF6F0] px-2 py-1 text-xs font-semibold text-[#C0392B]">
+                Mesversario
+              </div>
+            )}
+
+            <Link
+              href={`/pedidos/${order.id}`}
+              className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
+            >
+              Detalhes
+            </Link>
+
+            <Link
+              href={`/pedidos/${order.id}/editar`}
+              className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-[#FAF6F0]"
+            >
+              <Edit3 size={16} aria-hidden="true" />
+              <span className="hidden sm:inline">Editar</span>
+            </Link>
+
+            <select
+              value={order.status}
+              onChange={(event) => updateOrderStatus(order.id, event.target.value)}
+              disabled={isUpdating}
+              className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[#C0392B] disabled:opacity-50"
+              style={{ color: getStatusColor(order.status) }}
+            >
+              {statusOptions
+                .filter((option) => option.id !== 'todos')
+                .map((option) => (
+                  <option key={option.id} value={option.id} style={{ color: '#1A0A08' }}>
+                    {option.label}
+                  </option>
+                ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault()
+                void deleteOrder(order.id)
+              }}
+              className="rounded-lg p-2 text-[#999999] transition-colors hover:bg-red-100 hover:text-[#C0392B]"
+              aria-label="Excluir pedido"
+            >
+              <Trash2 size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </article>
+    )
+  }
+
   return (
-    <div className="w-full pb-8">
+    <div className="min-h-screen w-full bg-[#FAF6F0] pb-8">
       <div className="border-b border-[rgba(26,10,8,0.07)] bg-white px-4 py-6 lg:px-6">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div>
@@ -471,6 +835,38 @@ export default function PedidosPage() {
 
         <div className="mb-6 space-y-4">
           <div className="overflow-x-auto pb-2">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
+                Periodo
+              </p>
+            </div>
+            <div className="flex min-w-min gap-2">
+              {dateFilterOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedDateFilter(option.id)
+                    setCurrentPage(1)
+                  }}
+                  className={`whitespace-nowrap rounded-lg px-4 py-2 font-medium transition-colors ${
+                    selectedDateFilter === option.id
+                      ? 'bg-[#C0392B] text-white'
+                      : 'border border-[rgba(26,10,8,0.07)] bg-white text-[#1A0A08] hover:bg-[#FAF6F0]'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto pb-2">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
+                Status
+              </p>
+            </div>
             <div className="flex min-w-min gap-2">
               {statusOptions.map((option) => (
                 <button
@@ -520,11 +916,11 @@ export default function PedidosPage() {
           <div className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white py-12 text-center">
             <p className="text-lg font-medium text-[#1A0A08]">Nenhum pedido encontrado</p>
             <p className="mt-1 text-sm text-[#999999]">
-              {searchQuery || selectedStatus !== 'todos'
+              {searchQuery || selectedStatus !== 'todos' || selectedDateFilter !== 'upcoming'
                 ? 'Tente ajustar seus filtros'
                 : 'Comece criando seu primeiro pedido'}
             </p>
-            {selectedStatus === 'todos' && !searchQuery && (
+            {selectedStatus === 'todos' && selectedDateFilter === 'upcoming' && !searchQuery && (
               <Link
                 href="/pedidos/novo"
                 className="mt-4 inline-block rounded-lg bg-[#C0392B] px-4 py-2 font-medium text-white transition-colors hover:bg-[#A0301F]"
@@ -535,155 +931,42 @@ export default function PedidosPage() {
           </div>
         ) : (
           <>
-          <div className="space-y-3">
-            {pagedOrders.map((order) => {
-              const mainItems = getMainItems(order)
-              const hasStructuredItems = mainItems.length > 0
-              const recurringProgress = getRecurringProgress(order)
-              const isUpdating = updatingOrderId === order.id
-              const customer = order.customer_id ? customerById[order.customer_id] : undefined
-              const customerName = customer?.name?.trim() || 'Cliente não informado'
-              const customerInitials = customer?.name
-                ?.split(' ')
-                .map((namePart) => namePart[0])
-                .join('')
-                .toUpperCase()
-                .slice(0, 2)
-              const totalValue = parseNumericValue(order.total_value ?? 0)
-              const depositValue = parseNumericValue(order.down_payment ?? order.deposit_value ?? 0)
-              const remainingValue = order.remaining_amount == null
-                ? Math.max(totalValue - depositValue, 0)
-                : parseNumericValue(order.remaining_amount)
-
-              return (
-                <article
-                  key={order.id}
-                  className="block overflow-hidden rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white transition-shadow hover:shadow-md"
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+              {orderGroups.map((group) => (
+                <section
+                  key={group.id}
+                  className={`rounded-[16px] border bg-white p-4 ${
+                    group.tone === 'overdue'
+                      ? 'border-[#C0392B]'
+                      : group.tone === 'undated'
+                        ? 'border-dashed border-[#C9A84C]'
+                        : 'border-[rgba(26,10,8,0.07)]'
+                  }`}
                 >
-                  <div
-                    className="flex flex-col gap-4 p-4 md:flex-row md:items-center"
-                    style={{ borderLeft: `4px solid ${getStatusColor(order.status)}` }}
-                  >
-                    <div className="flex min-w-0 flex-1 items-start gap-4">
-                      <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
-                        {customerInitials}
-                      </div>
-
-                      <div className="min-w-0">
-                        <p className="font-semibold text-[#1A0A08]">
-                          {customerName}
-                        </p>
-                        <p className="truncate text-sm text-[#999999]">{getOrderSummary(order)}</p>
-                        <p className="mt-1 text-xs text-[#999999]">
-                          {formatDate(order.delivery_date ?? order.order_date)} as {order.delivery_time}
-                        </p>
-                        {hasStructuredItems && (
-                          <div className="mt-2 flex items-center gap-2 text-xs text-[#1A0A08]">
-                            <Package size={14} className="text-[#C9A84C]" aria-hidden="true" />
-                            <span>
-                              {mainItems.length === 1
-                                ? '1 item estruturado'
-                                : `${mainItems.length} itens estruturados`}
-                            </span>
-                          </div>
-                        )}
-                        {order.is_recurring && (
-                          <p className="mt-2 text-xs font-semibold text-[#C0392B]">
-                            {recurringProgress.delivered}/{recurringProgress.total} entregues
-                          </p>
-                        )}
-                      </div>
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-bold text-[#1A0A08]">{group.title}</h2>
+                      <p className="mt-1 text-sm font-semibold text-[#C9A84C]">
+                        {group.subtitle}
+                      </p>
                     </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-3 md:flex-shrink-0">
-                      <div className="text-right">
-                        <p className="font-bold text-[#1A0A08]">
-                          {formatCurrency(totalValue)}
-                        </p>
-                        {depositValue > 0 ? (
-                          <>
-                            <p className="text-xs text-[#C9A84C]">
-                              {formatCurrency(depositValue)} sinal
-                            </p>
-                            <p className="text-xs text-[#999999]">
-                              {formatCurrency(remainingValue)} restante
-                            </p>
-                          </>
-                        ) : (
-                          <p className="text-xs text-[#999999]">Sem sinal</p>
-                        )}
-                        {remainingValue > 0 && (
-                          <button
-                            type="button"
-                            disabled={isUpdating}
-                            onClick={() => receiveRemainingPayment(order.id)}
-                            className="mt-1 text-xs font-semibold text-[#27AE60] hover:text-[#1E8449] disabled:opacity-50"
-                          >
-                            Receber restante
-                          </button>
-                        )}
-                      </div>
-
-                      {order.fulfillment_type === 'entrega' && (
-                        <div className="rounded-full bg-[#C9A84C] px-2 py-1 text-xs font-semibold text-white">
-                          Entrega
-                        </div>
-                      )}
-
-                      {order.is_recurring && (
-                        <div className="rounded-full bg-[#FAF6F0] px-2 py-1 text-xs font-semibold text-[#C0392B]">
-                          Mesversario
-                        </div>
-                      )}
-
-                      <Link
-                        href={`/pedidos/${order.id}`}
-                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#1A0A08] transition-colors hover:bg-[#FAF6F0]"
-                      >
-                        Detalhes
-                      </Link>
-
-                      <Link
-                        href={`/pedidos/${order.id}/editar`}
-                        className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-sm font-semibold text-[#C0392B] transition-colors hover:bg-[#FAF6F0]"
-                      >
-                        <Edit3 size={16} aria-hidden="true" />
-                        <span className="hidden sm:inline">Editar</span>
-                      </Link>
-
-                      <select
-                        value={order.status}
-                        onChange={(e) => updateOrderStatus(order.id, e.target.value)}
-                        disabled={isUpdating}
-                        className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-[#FAF6F0] px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[#C0392B] disabled:opacity-50"
-                        style={{ color: getStatusColor(order.status) }}
-                      >
-                        {statusOptions.filter(o => o.id !== 'todos').map((option) => (
-                          <option key={option.id} value={option.id} style={{ color: '#1A0A08' }}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.preventDefault()
-                          void deleteOrder(order.id)
-                        }}
-                        className="rounded-lg p-2 text-[#999999] transition-colors hover:bg-red-100 hover:text-[#C0392B]"
-                        aria-label="Excluir pedido"
-                      >
-                        <Trash2 size={18} aria-hidden="true" />
-                      </button>
-                    </div>
+                    <span className="rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-semibold text-[#1A0A08]">
+                      {group.orders.length}
+                    </span>
                   </div>
-                </article>
-              )
-            })}
-          </div>
 
-            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                  <div className="space-y-3">
+                    {group.orders.map((order) => renderOrderCard(order))}
+                  </div>
+                </section>
+              ))}
+            </div>
+
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              onPageChange={setCurrentPage}
+            />
           </>
         )}
       </main>
