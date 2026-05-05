@@ -12,26 +12,27 @@ import {
 } from '@/lib/format'
 import { logSupabaseError } from '@/lib/supabase-error'
 
-type SupabaseErrorLike = {
-  message?: string
-  details?: string
-  hint?: string
-  code?: string
-}
-
 type Packaging = {
   id: string
   user_id: string
   name: string
   category: string | null
-  package_quantity: number | string
-  unit: string
-  package_cost: number | string
-  cost_per_unit: number | string
-  capacity: number | string | null
+  package_quantity: NumericValue
+  unit: string | null
+  package_cost: NumericValue
+  cost_per_unit: NumericValue
+  stock_quantity: NumericValue
+  stock_unit: string | null
+  supplier_id: string | null
+  capacity: NumericValue
   capacity_unit: string | null
   notes: string | null
   created_at?: string
+}
+
+type Supplier = {
+  id: string
+  name: string
 }
 
 type PackagingEditForm = {
@@ -41,14 +42,28 @@ type PackagingEditForm = {
   unit: string
   package_cost: string
   cost_per_unit: string
+  stock_quantity: string
+  stock_unit: string
+  supplier_id: string
   capacity: string
   capacity_unit: string
   notes: string
 }
 
 const categoryOptions = ['Forminha', 'Caixa', 'Saco', 'Bandeja', 'Transporte', 'Outro']
+const stockUnitOptions = [
+  'unidade',
+  'pacote',
+  'caixa',
+  'rolo',
+  'kg',
+  'g',
+  'litro',
+  'ml',
+  'outro',
+]
 
-function parseNumeric(value: number | string | null | undefined) {
+function parseNumeric(value: NumericValue) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0
   if (typeof value === 'string') {
     const parsed = Number(value.replace(',', '.'))
@@ -73,6 +88,9 @@ function buildEditForm(packaging: Packaging): PackagingEditForm {
     unit: packaging.unit ?? '',
     package_cost: String(packaging.package_cost ?? ''),
     cost_per_unit: String(packaging.cost_per_unit ?? ''),
+    stock_quantity: String(packaging.stock_quantity ?? 0),
+    stock_unit: packaging.stock_unit ?? 'unidade',
+    supplier_id: packaging.supplier_id ?? '',
     capacity: String(packaging.capacity ?? ''),
     capacity_unit: packaging.capacity_unit ?? '',
     notes: packaging.notes ?? '',
@@ -87,8 +105,13 @@ function formatCapacity(packaging: Packaging) {
   return `${formatNumber(capacity)} ${packaging.capacity_unit?.trim() || 'unidades'}`
 }
 
+function getStockUnit(packaging: Packaging) {
+  return packaging.stock_unit?.trim() || 'unidade'
+}
+
 export default function EmbalagensPage() {
   const [packagingItems, setPackagingItems] = useState<Packaging[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('todas')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -116,16 +139,25 @@ export default function EmbalagensPage() {
           throw new Error('Usuário não autenticado')
         }
 
-        const { data, error: packagingError } = await supabase
-          .from('packaging')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('name', { ascending: true })
+        const [packagingResponse, suppliersResponse] = await Promise.all([
+          supabase
+            .from('packaging')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('name', { ascending: true }),
+          supabase
+            .from('suppliers')
+            .select('id, name')
+            .eq('user_id', user.id)
+            .order('name', { ascending: true }),
+        ])
 
-        if (packagingError) throw packagingError
+        if (packagingResponse.error) throw packagingResponse.error
+        if (suppliersResponse.error) throw suppliersResponse.error
 
         if (isMounted) {
-          setPackagingItems((data ?? []) as Packaging[])
+          setPackagingItems((packagingResponse.data ?? []) as Packaging[])
+          setSuppliers((suppliersResponse.data ?? []) as Supplier[])
         }
       } catch (err) {
         logSupabaseError('Erro ao carregar embalagens:', err)
@@ -172,6 +204,16 @@ export default function EmbalagensPage() {
     })
   }, [categoryFilter, packagingItems, searchQuery])
 
+  const supplierById = useMemo(() => {
+    return new Map(suppliers.map((supplier) => [supplier.id, supplier]))
+  }, [suppliers])
+
+  function getSupplierName(supplierId: string | null) {
+    if (!supplierId) return ''
+
+    return supplierById.get(supplierId)?.name ?? ''
+  }
+
   function startEdit(packaging: Packaging) {
     setEditingId(packaging.id)
     setEditForm(buildEditForm(packaging))
@@ -198,6 +240,11 @@ export default function EmbalagensPage() {
       return
     }
 
+    if (parseNumeric(editForm.stock_quantity) < 0) {
+      setError('Estoque atual nao pode ser negativo')
+      return
+    }
+
     setSavingId(packaging.id)
     setError('')
 
@@ -218,6 +265,9 @@ export default function EmbalagensPage() {
         unit: editForm.unit.trim() || 'unidade',
         package_cost: parseNumeric(editForm.package_cost),
         cost_per_unit: parseNumeric(editForm.cost_per_unit),
+        stock_quantity: parseNumeric(editForm.stock_quantity),
+        stock_unit: editForm.stock_unit.trim() || 'unidade',
+        supplier_id: editForm.supplier_id || null,
         capacity: editForm.capacity.trim() ? parseNumeric(editForm.capacity) : null,
         capacity_unit: editForm.capacity_unit.trim()
           ? normalizeUpper(editForm.capacity_unit)
@@ -396,6 +446,10 @@ export default function EmbalagensPage() {
             {filteredPackaging.map((item) => {
               const capacity = formatCapacity(item)
               const currentEditForm = editingId === item.id ? editForm : null
+              const stockQuantity = parseNumeric(item.stock_quantity)
+              const stockUnit = getStockUnit(item)
+              const supplierName = getSupplierName(item.supplier_id)
+              const packageUnit = item.unit?.trim() || 'unidade'
 
               return (
                 <article
@@ -412,9 +466,9 @@ export default function EmbalagensPage() {
                       </p>
                     </div>
 
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#FAF6F0] text-[#C0392B]">
-                      <Boxes size={21} aria-hidden="true" />
-                    </div>
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-[#FAF6F0] px-2.5 py-1 text-xs font-bold text-[#1A0A08]">
+                      {formatNumber(stockQuantity)} {stockUnit}
+                    </span>
                   </div>
 
                   {currentEditForm && (
@@ -474,6 +528,38 @@ export default function EmbalagensPage() {
                           type="number"
                           min="0"
                           step="0.01"
+                          value={currentEditForm.stock_quantity}
+                          onChange={(event) => updateEditForm('stock_quantity', event.target.value)}
+                          placeholder="Estoque atual"
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        />
+                        <select
+                          value={currentEditForm.stock_unit}
+                          onChange={(event) => updateEditForm('stock_unit', event.target.value)}
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B]"
+                        >
+                          {stockUnitOptions.map((unit) => (
+                            <option key={unit} value={unit}>
+                              {unit}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={currentEditForm.supplier_id}
+                          onChange={(event) => updateEditForm('supplier_id', event.target.value)}
+                          className="rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-2 text-[#1A0A08] outline-none focus:ring-2 focus:ring-[#C0392B] sm:col-span-2"
+                        >
+                          <option value="">Sem fornecedor</option>
+                          {suppliers.map((supplier) => (
+                            <option key={supplier.id} value={supplier.id}>
+                              {supplier.name}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
                           value={currentEditForm.capacity}
                           onChange={(event) => updateEditForm('capacity', event.target.value)}
                           placeholder="Capacidade"
@@ -506,11 +592,27 @@ export default function EmbalagensPage() {
 
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
+                      <p className="text-xs font-medium text-[#999999]">Estoque atual</p>
+                      <p className="mt-1 font-bold text-[#1A0A08]">
+                        {formatNumber(stockQuantity)} {stockUnit}
+                      </p>
+                    </div>
+
+                    {supplierName && (
+                      <div>
+                        <p className="text-xs font-medium text-[#999999]">
+                          Fornecedor preferencial
+                        </p>
+                        <p className="mt-1 font-bold text-[#1A0A08]">{supplierName}</p>
+                      </div>
+                    )}
+
+                    <div>
                       <p className="text-xs font-medium text-[#999999]">
                         Quantidade por pacote
                       </p>
                       <p className="mt-1 font-bold text-[#1A0A08]">
-                        {formatNumber(item.package_quantity)} {item.unit}
+                        {formatNumber(item.package_quantity)} {packageUnit}
                       </p>
                     </div>
 

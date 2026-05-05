@@ -114,7 +114,7 @@ function getPrimaryAction(pathname: string): PrimaryAction {
   }
 
   if (isRoute(pathname, '/agenda')) {
-    return { kind: 'navigate', href: '/agenda/novo', label: 'Novo item da agenda' }
+    return { kind: 'navigate', href: '/pedidos/novo', label: 'Novo pedido' }
   }
 
   if (isRoute(pathname, '/financeiro')) {

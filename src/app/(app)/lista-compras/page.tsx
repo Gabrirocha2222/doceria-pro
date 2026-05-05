@@ -81,10 +81,13 @@ type Packaging = {
   user_id: string
   name: string
   category: string | null
+  supplier_id: string | null
   package_quantity: NumericValue
   unit: string | null
   package_cost: NumericValue
   cost_per_unit: NumericValue
+  stock_quantity: NumericValue
+  stock_unit: string | null
   capacity: NumericValue
   capacity_unit: string | null
 }
@@ -203,6 +206,8 @@ const unitDefinitions: Record<string, UnitDefinition> = {
   unidades: { kind: 'count', factor: 1 },
   unid: { kind: 'count', factor: 1 },
   und: { kind: 'count', factor: 1 },
+  rolo: { kind: 'count', factor: 1 },
+  rolos: { kind: 'count', factor: 1 },
   pacote: { kind: 'count', factor: 1 },
   pacotes: { kind: 'count', factor: 1 },
   pct: { kind: 'count', factor: 1 },
@@ -409,6 +414,70 @@ function calculateCostPerUnitFromPurchase(
   return purchasePrice / quantityInCostUnit
 }
 
+type CountUnitGroup = 'unit' | 'package' | 'box' | 'roll'
+
+function getCountUnitGroup(unit: string): CountUnitGroup | null {
+  const normalizedUnit = normalizeUnit(unit)
+
+  if (['un', 'unidade', 'unidades', 'unid', 'und'].includes(normalizedUnit)) {
+    return 'unit'
+  }
+
+  if (['pacote', 'pacotes', 'pct'].includes(normalizedUnit)) {
+    return 'package'
+  }
+
+  if (['caixa', 'caixas', 'cx'].includes(normalizedUnit)) {
+    return 'box'
+  }
+
+  if (['rolo', 'rolos'].includes(normalizedUnit)) {
+    return 'roll'
+  }
+
+  return null
+}
+
+function convertStockQuantity(quantity: number, fromUnit: string, toUnit: string) {
+  if (normalizeUnit(fromUnit) === normalizeUnit(toUnit)) return quantity
+
+  const fromDefinition = getUnitDefinition(fromUnit)
+  const toDefinition = getUnitDefinition(toUnit)
+
+  if (!fromDefinition || !toDefinition || fromDefinition.kind !== toDefinition.kind) {
+    return null
+  }
+
+  if (fromDefinition.kind === 'count') {
+    return getCountUnitGroup(fromUnit) === getCountUnitGroup(toUnit) ? quantity : null
+  }
+
+  return convertQuantity(quantity, fromUnit, toUnit)
+}
+
+function calculatePurchasedStockAddition(
+  item: ShoppingListItem,
+  purchasedQuantity: number,
+  stockUnit: string
+) {
+  if (purchasedQuantity <= 0) return 0
+
+  if (item.hasClosedPurchasePackage) {
+    const purchasedContentQuantity = purchasedQuantity * item.purchaseQuantity
+    const convertedQuantity = convertStockQuantity(
+      purchasedContentQuantity,
+      item.purchaseUnit,
+      stockUnit
+    )
+
+    return convertedQuantity ?? purchasedQuantity
+  }
+
+  const convertedQuantity = convertStockQuantity(purchasedQuantity, item.unit, stockUnit)
+
+  return convertedQuantity ?? purchasedQuantity
+}
+
 function getPurchaseContainerName(item: ShoppingListItem, quantity: number) {
   if (!item.hasClosedPurchasePackage) return item.unit
 
@@ -545,11 +614,26 @@ function addQuantityToAccumulator(
 }
 
 function getStockQuantityInUnit(item: AccumulatedPurchaseItem) {
-  if (item.kind !== 'ingredient') return 0
   if (item.stockQuantity <= 0) return 0
 
   if (normalizeUnit(item.stockUnit) === normalizeUnit(item.unit)) {
     return item.stockQuantity
+  }
+
+  if (item.kind === 'packaging' && parseNumber(item.purchaseQuantity) > 0) {
+    const stockUnitGroup = getCountUnitGroup(item.stockUnit)
+    const itemUnitGroup = getCountUnitGroup(item.unit)
+    const purchaseUnitGroup = getCountUnitGroup(item.purchaseUnit)
+
+    if (
+      stockUnitGroup &&
+      stockUnitGroup !== itemUnitGroup &&
+      itemUnitGroup === purchaseUnitGroup
+    ) {
+      const stockContentQuantity = item.stockQuantity * parseNumber(item.purchaseQuantity)
+
+      return convertStockQuantity(stockContentQuantity, item.purchaseUnit, item.unit) ?? 0
+    }
   }
 
   return convertQuantity(item.stockQuantity, item.stockUnit, item.unit) ?? 0
@@ -620,13 +704,11 @@ function finalizeShoppingItem(item: AccumulatedPurchaseItem): ShoppingListItem {
     hasMixedUnits:
       item.hasMixedUnits ||
       hasPurchaseUnitMismatch ||
-      (item.kind === 'ingredient' &&
-        item.stockQuantity > 0 &&
-        !canConvertUnits(item.stockUnit, item.unit)),
+      (item.stockQuantity > 0 && !canConvertUnits(item.stockUnit, item.unit)),
     sources: Array.from(item.sources).sort((firstSource, secondSource) =>
       firstSource.localeCompare(secondSource, 'pt-BR')
     ),
-    isInStock: item.kind === 'ingredient' && quantityToBuy <= 0,
+    isInStock: quantityToBuy <= 0,
   }
 }
 
@@ -796,7 +878,7 @@ export default function ListaComprasPage() {
             const { data: packagingData, error: packagingError } = await supabase
               .from('packaging')
               .select(
-                'id, user_id, name, category, package_quantity, unit, package_cost, cost_per_unit, capacity, capacity_unit'
+                'id, user_id, name, category, supplier_id, package_quantity, unit, package_cost, cost_per_unit, stock_quantity, stock_unit, capacity, capacity_unit'
               )
               .eq('user_id', user.id)
               .in('id', packagingIds)
@@ -1006,6 +1088,10 @@ export default function ListaComprasPage() {
         const packaging = packagingById.get(packagingLink.packaging_id)
         const unit = packaging?.unit?.trim() || 'unidade'
         const purchaseDetails = getPackagingPurchaseDetails(packaging, unit)
+        const stockUnit = packaging?.stock_unit?.trim() || 'unidade'
+        const supplierName = packaging?.supplier_id
+          ? supplierById.get(packaging.supplier_id)?.name ?? 'Sem fornecedor definido'
+          : 'Sem fornecedor definido'
         const capacity = parseNumber(packaging?.capacity)
         const safeCapacity = capacity > 0 ? capacity : 1
         const neededQuantity =
@@ -1019,7 +1105,7 @@ export default function ListaComprasPage() {
           sourceId: packagingLink.packaging_id,
           name: packaging?.name || 'Embalagem não encontrada',
           category: packaging?.category?.trim() || 'Sem categoria',
-          supplierName: 'Sem fornecedor',
+          supplierName,
           quantity: neededQuantity,
           unit,
           costPerUnit: packaging?.cost_per_unit ?? null,
@@ -1029,8 +1115,8 @@ export default function ListaComprasPage() {
           purchasePrice: purchaseDetails.purchasePrice,
           purchaseQuantitySource: purchaseDetails.purchaseQuantitySource,
           purchasePriceSource: purchaseDetails.purchasePriceSource,
-          stockQuantity: 0,
-          stockUnit: unit,
+          stockQuantity: parseNumber(packaging?.stock_quantity),
+          stockUnit,
           sourceLabel,
         })
       })
@@ -1422,6 +1508,67 @@ export default function ListaComprasPage() {
     }
   }
 
+  async function updatePackagingStockForPurchase(items: ShoppingListItem[], userId: string) {
+    const stockUpdates = items
+      .filter((item) => item.kind === 'packaging')
+      .map((item) => {
+        const currentPackaging = packagingById.get(item.sourceId)
+        const currentStockQuantity = parseNumber(currentPackaging?.stock_quantity)
+        const stockUnit = currentPackaging?.stock_unit?.trim() || item.stockUnit || 'unidade'
+        const purchasedQuantity =
+          getPurchasedQuantityValue(item) ||
+          (item.hasClosedPurchasePackage ? item.purchasePackageCount : item.quantityToBuy)
+        const quantityToAdd = calculatePurchasedStockAddition(
+          item,
+          purchasedQuantity,
+          stockUnit
+        )
+
+        return {
+          packagingId: item.sourceId,
+          quantityToAdd,
+          nextStockQuantity: currentStockQuantity + quantityToAdd,
+          stockUnit,
+        }
+      })
+      .filter((stockUpdate) => stockUpdate.quantityToAdd > 0)
+
+    for (const stockUpdate of stockUpdates) {
+      const { error: updateError } = await supabase
+        .from('packaging')
+        .update({
+          stock_quantity: stockUpdate.nextStockQuantity,
+          stock_unit: stockUpdate.stockUnit,
+        })
+        .eq('id', stockUpdate.packagingId)
+        .eq('user_id', userId)
+
+      if (updateError) throw updateError
+    }
+
+    if (stockUpdates.length > 0) {
+      const stockUpdateByPackagingId = new Map(
+        stockUpdates.map((stockUpdate) => [stockUpdate.packagingId, stockUpdate])
+      )
+
+      setPackagingItems((currentItems) =>
+        currentItems.map((packaging) => {
+          const stockUpdate = stockUpdateByPackagingId.get(packaging.id)
+
+          return stockUpdate
+            ? {
+                ...packaging,
+                stock_quantity: stockUpdate.nextStockQuantity,
+                stock_unit: stockUpdate.stockUnit,
+              }
+            : packaging
+        })
+      )
+    }
+
+    return stockUpdates.length
+  }
+
   async function handleFinalizePurchase() {
     if (!canFinalizePurchase) return
 
@@ -1490,7 +1637,18 @@ export default function ListaComprasPage() {
 
       if (insertError) throw insertError
 
-      setActionFeedback('Saida financeira criada para a compra da lista.')
+      const updatedPackagingCount = await updatePackagingStockForPurchase(
+        itemsForTransaction,
+        user.id
+      )
+
+      setActionFeedback(
+        updatedPackagingCount > 0
+          ? `Saida financeira criada e estoque de ${updatedPackagingCount} embalagem${
+              updatedPackagingCount === 1 ? '' : 's'
+            } atualizado.`
+          : 'Saida financeira criada para a compra da lista.'
+      )
     } catch (err) {
       console.error('Erro ao finalizar compra:', err)
       const message =
@@ -1578,6 +1736,17 @@ export default function ListaComprasPage() {
               const purchasePackageLabel = item.hasClosedPurchasePackage
                 ? `${formatNumber(item.purchaseQuantity)} ${item.purchaseUnit}`
                 : `${formatNumber(1)} ${item.unit}`
+              const stockAdditionQuantity =
+                item.kind === 'packaging'
+                  ? calculatePurchasedStockAddition(
+                      item,
+                      purchasedQuantity ||
+                        (item.hasClosedPurchasePackage
+                          ? item.purchasePackageCount
+                          : item.quantityToBuy),
+                      item.stockUnit
+                    )
+                  : 0
               const canUpdateStandardPrice =
                 parseNumber(realUnitPriceInput) > 0 && updatingPriceItemKey !== item.itemKey
 
@@ -1620,6 +1789,12 @@ export default function ListaComprasPage() {
                             Comprar: {formatNumber(item.purchasePackageCount)}{' '}
                             {getPurchaseContainerName(item, item.purchasePackageCount)}
                           </p>
+                          {item.kind === 'packaging' && (
+                            <p>
+                              Ao finalizar: adiciona {formatNumber(stockAdditionQuantity)}{' '}
+                              {item.stockUnit} ao estoque
+                            </p>
+                          )}
                         </div>
                         {item.sources.length > 0 && (
                           <p className="mt-2 text-xs text-[#6F625F]">
@@ -1778,11 +1953,9 @@ export default function ListaComprasPage() {
                 Necessario {formatNumber(item.quantityNeeded)} {item.unit}
               </p>
             </div>
-            {item.kind === 'ingredient' && (
-              <p className="mt-1 text-xs font-semibold text-[#1F7A3A]">
-                Em estoque: {formatNumber(item.stockQuantity)} {item.unit}
-              </p>
-            )}
+            <p className="mt-1 text-xs font-semibold text-[#1F7A3A]">
+              Em estoque: {formatNumber(item.stockQuantity)} {item.unit}
+            </p>
             <p className="mt-1 text-xs text-[#999999]">
               Custo usado nos pedidos: {formatOptionalCurrency(item.estimatedUsageCost)}
             </p>

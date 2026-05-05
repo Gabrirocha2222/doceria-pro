@@ -1,12 +1,12 @@
 'use client'
 
 import type { ChangeEvent, FormEvent } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, ArrowLeft, Calculator, Save } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import {
-  type NumericValue,
   formatCurrency,
   optionalText,
   parseDecimal,
@@ -18,12 +18,31 @@ type PackagingForm = {
   package_quantity: string
   unit: string
   package_cost: string
+  stock_quantity: string
+  stock_unit: string
+  supplier_id: string
   capacity: string
   capacity_unit: string
   notes: string
 }
 
+type Supplier = {
+  id: string
+  name: string
+}
+
 const categoryOptions = ['Forminha', 'Caixa', 'Saco', 'Bandeja', 'Transporte', 'Outro']
+const stockUnitOptions = [
+  'unidade',
+  'pacote',
+  'caixa',
+  'rolo',
+  'kg',
+  'g',
+  'litro',
+  'ml',
+  'outro',
+]
 
 const initialForm: PackagingForm = {
   name: '',
@@ -31,6 +50,9 @@ const initialForm: PackagingForm = {
   package_quantity: '',
   unit: 'unidades',
   package_cost: '',
+  stock_quantity: '0',
+  stock_unit: 'unidade',
+  supplier_id: '',
   capacity: '',
   capacity_unit: '',
   notes: '',
@@ -56,16 +78,65 @@ function calculateCostPerUnit(packageCost: number, packageQuantity: number) {
 }
 export default function NovaEmbalagemPage() {
   const [form, setForm] = useState<PackagingForm>(initialForm)
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSuppliers() {
+      setIsLoadingSuppliers(true)
+
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser()
+
+        if (userError || !user) {
+          throw new Error('Usuario nao autenticado')
+        }
+
+        const { data, error: suppliersError } = await supabase
+          .from('suppliers')
+          .select('id, name')
+          .eq('user_id', user.id)
+          .order('name', { ascending: true })
+
+        if (suppliersError) throw suppliersError
+
+        if (isMounted) {
+          setSuppliers((data ?? []) as Supplier[])
+        }
+      } catch (err) {
+        console.error('Erro ao carregar fornecedores:', err)
+        if (isMounted) {
+          setError('Falha ao carregar fornecedores')
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingSuppliers(false)
+        }
+      }
+    }
+
+    void loadSuppliers()
+
+    return () => {
+      isMounted = false
+    }
+  }, [supabase])
 
   const packageQuantity = useMemo(
     () => parseDecimal(form.package_quantity),
     [form.package_quantity]
   )
   const packageCost = useMemo(() => parseDecimal(form.package_cost), [form.package_cost])
+  const stockQuantity = useMemo(() => parseDecimal(form.stock_quantity), [form.stock_quantity])
   const capacity = useMemo(() => parseOptionalDecimal(form.capacity), [form.capacity])
   const costPerUnit = useMemo(
     () => calculateCostPerUnit(packageCost, packageQuantity),
@@ -88,6 +159,8 @@ export default function NovaEmbalagemPage() {
     if (packageQuantity <= 0) return 'Quantidade por pacote deve ser maior que zero'
     if (!form.unit.trim()) return 'Unidade é obrigatória'
     if (packageCost <= 0) return 'Custo do pacote deve ser maior que zero'
+    if (stockQuantity < 0) return 'Estoque atual nao pode ser negativo'
+    if (!form.stock_unit.trim()) return 'Unidade do estoque e obrigatoria'
     if (form.capacity.trim() && (capacity === null || capacity < 0)) {
       return 'Capacidade deve ser um número válido'
     }
@@ -126,6 +199,9 @@ export default function NovaEmbalagemPage() {
           unit: form.unit.trim(),
           package_cost: packageCost,
           cost_per_unit: costPerUnit,
+          stock_quantity: stockQuantity,
+          stock_unit: form.stock_unit.trim() || 'unidade',
+          supplier_id: form.supplier_id || null,
           capacity,
           capacity_unit: form.capacity_unit.trim() ? normalizeUpper(form.capacity_unit) : null,
           notes: optionalText(form.notes),
@@ -215,6 +291,35 @@ export default function NovaEmbalagemPage() {
               </div>
 
               <div>
+                <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="supplier_id">
+                  Fornecedor preferencial
+                </label>
+                <select
+                  id="supplier_id"
+                  name="supplier_id"
+                  value={form.supplier_id}
+                  onChange={handleChange}
+                  disabled={isLoadingSuppliers || suppliers.length === 0}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B] disabled:cursor-not-allowed disabled:bg-[#FAF6F0] disabled:text-[#999999]"
+                >
+                  <option value="">Sem fornecedor</option>
+                  {suppliers.map((supplier) => (
+                    <option key={supplier.id} value={supplier.id}>
+                      {supplier.name}
+                    </option>
+                  ))}
+                </select>
+                {!isLoadingSuppliers && suppliers.length === 0 && (
+                  <Link
+                    href="/fornecedores/novo"
+                    className="mt-2 inline-flex text-sm font-semibold text-[#C0392B] transition-colors hover:text-[#A0301F]"
+                  >
+                    Cadastre um fornecedor
+                  </Link>
+                )}
+              </div>
+
+              <div>
                 <label className="mb-2 block text-sm font-semibold text-[#1A0A08]" htmlFor="unit">
                   Unidade *
                 </label>
@@ -269,6 +374,49 @@ export default function NovaEmbalagemPage() {
                   placeholder="2,40"
                   className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
                 />
+              </div>
+
+              <div>
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="stock_quantity"
+                >
+                  Estoque atual
+                </label>
+                <input
+                  id="stock_quantity"
+                  name="stock_quantity"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={form.stock_quantity}
+                  onChange={handleChange}
+                  placeholder="0"
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] placeholder-[#999999] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                />
+              </div>
+
+              <div>
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#1A0A08]"
+                  htmlFor="stock_unit"
+                >
+                  Unidade do estoque
+                </label>
+                <select
+                  id="stock_unit"
+                  name="stock_unit"
+                  value={form.stock_unit}
+                  onChange={handleChange}
+                  className="w-full rounded-lg border border-[rgba(26,10,8,0.07)] bg-white px-3 py-3 text-[#1A0A08] outline-none transition focus:ring-2 focus:ring-[#C0392B]"
+                >
+                  {stockUnitOptions.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
