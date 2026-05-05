@@ -20,6 +20,13 @@
 # production
 /build
 
+# android / bubblewrap
+*.apk
+*.aab
+*.apks
+*.jks
+*.keystore
+
 # misc
 .DS_Store
 *.pem

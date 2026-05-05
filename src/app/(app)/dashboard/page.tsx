@@ -2,148 +2,105 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import {
-  AlertTriangle,
-  Bell,
-  CalendarDays,
-  DollarSign,
-  PackageCheck,
-  Plus,
-  Receipt,
-  TrendingUp,
-  Wallet,
-} from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
-import { formatCurrency, formatNumber, parseNumericValue } from '@/lib/format'
-import { logSupabaseError } from '@/lib/supabase-error'
 
 type NumericValue = number | string | null | undefined
 
-type TransactionType = 'entrada' | 'saida'
-
-type FinancialTransaction = {
-  id: string
-  type: TransactionType
-  amount: NumericValue
-  transaction_date: string | null
-}
-
-type CustomerSummary = {
-  id: string
-  name: string | null
-  phone: string | null
-}
+type CustomerRelation =
+  | {
+      name: string | null
+    }
+  | {
+      name: string | null
+    }[]
+  | null
 
 type OrderItem = {
   id: string
-  order_id: string
-  recipe_id: string | null
-  parent_order_item_id: string | null
-  item_name: string | null
   quantity: NumericValue
   unit_price: NumericValue
-  subtotal: NumericValue
-  notes: string | null
-}
-
-type OrderCakeTopper = {
-  id: string
-  order_id: string
-  cost: NumericValue
 }
 
 type Order = {
   id: string
-  user_id?: string | null
-  customer_id?: string | null
-  order_date?: string | null
-  delivery_date?: string | null
-  delivery_time?: string | null
-  status?: string | null
-  payment_status?: string | null
-  total_value?: NumericValue
-  deposit_value?: NumericValue
-  delivery_address?: string | null
-  notes?: string | null
-  created_at?: string | null
-  updated_at?: string | null
-  fulfillment_type?: string | null
-  delivery_fee?: NumericValue
-  down_payment?: NumericValue
-  remaining_amount?: NumericValue
-  remaining_payment_date?: string | null
-  discount_amount?: NumericValue
-  manual_total?: NumericValue
-  extras_total?: NumericValue
-  is_recurring?: boolean | null
-  recurrence_type?: string | null
-  recurrence_count?: number | null
-  first_occurrence_date?: string | null
-  // computed/joined
-  customers?: CustomerSummary | null
-  order_items?: OrderItem[]
-  order_cake_toppers?: OrderCakeTopper[]
+  user_id: string
+  customer_id: string | null
+  delivery_date: string | null
+  delivery_time: string | null
+  total_value: NumericValue
+  deposit_value: NumericValue
+  status: string | null
+  payment_status: string | null
+  order_date: string | null
+  customers?: CustomerRelation
+  order_items?: OrderItem[] | null
 }
 
-type SupplierOrder = {
+type Ingredient = {
   id: string
-  title: string
-  due_date: string | null
-  status: string
-  estimated_cost?: NumericValue
-  customer_order_id?: string | null
+  user_id: string
+  name: string
+  stock_quantity: NumericValue
+  minimum_stock: NumericValue
+  usage_unit: string | null
 }
 
-type RecipeCost = {
-  id: string
-  total_cost?: NumericValue
-  cost_per_unit?: NumericValue
-  supplier_cost?: NumericValue
-  supplier_cost_unit?: string | null
-  is_third_party?: boolean | null
+type DashboardData = {
+  orders: Order[]
+  stockAlerts: Ingredient[]
 }
 
-type DateRange = {
-  start: string
-  end: string
+type IconProps = {
+  className?: string
 }
 
-type PeriodSummary = {
-  ordersTotal: number
-  received: number
-  profit: number
-  orderCount: number
-  receivable: number
-  hasSimpleProfit: boolean
+const monthlyGoal = 6000
+const emptyData: DashboardData = {
+  orders: [],
+  stockAlerts: [],
 }
 
-type Notification = {
-  id: string
-  title: string
-  description: string
-  tone: 'danger' | 'warning' | 'info'
-  actionUrl: string
-}
+const currencyFormatter = new Intl.NumberFormat('pt-BR', {
+  style: 'currency',
+  currency: 'BRL',
+})
 
-const emptyDashboardData = {
-  orders: [] as Order[],
-  supplierOrders: [] as SupplierOrder[],
-  transactions: [] as FinancialTransaction[],
-  recipeCostsById: new Map<string, RecipeCost>(),
-}
+const shortDateFormatter = new Intl.DateTimeFormat('pt-BR', {
+  day: '2-digit',
+  month: '2-digit',
+})
 
-const simpleProfitMargin = 0.4
-const upcomingDays = 14
-function formatCompactCurrency(value: NumericValue) {
-  const parsedValue = parseNumericValue(value)
+const weekdays = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado']
+const months = [
+  'janeiro',
+  'fevereiro',
+  'março',
+  'abril',
+  'maio',
+  'junho',
+  'julho',
+  'agosto',
+  'setembro',
+  'outubro',
+  'novembro',
+  'dezembro',
+]
 
-  if (parsedValue >= 1000) {
-    return `R$ ${(parsedValue / 1000).toFixed(1).replace('.', ',')}k`
+function parseNumber(value: NumericValue) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\./g, '').replace(',', '.')
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : 0
   }
 
-  return formatCurrency(parsedValue)
+  return 0
 }
+
+function formatCurrency(value: NumericValue) {
+  return currencyFormatter.format(parseNumber(value))
+}
+
 function formatInputDate(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -152,50 +109,25 @@ function formatInputDate(date: Date) {
   return `${year}-${month}-${day}`
 }
 
-function addDays(date: Date, amount: number) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount)
+function parseInputDate(date: string) {
+  return new Date(`${date}T00:00:00`)
 }
 
-function normalizeDate(value: string | null | undefined) {
-  return value ? value.slice(0, 10) : null
+function addDays(date: string, amount: number) {
+  const parsedDate = parseInputDate(date)
+  parsedDate.setDate(parsedDate.getDate() + amount)
+
+  return formatInputDate(parsedDate)
 }
 
-function formatDate(date: string | null | undefined) {
-  const normalizedDate = normalizeDate(date)
-  if (!normalizedDate) return 'Sem data'
-
-  return new Date(`${normalizedDate}T00:00:00`).toLocaleDateString('pt-BR')
-}
-
-function formatDateTitle(date: string) {
-  const formatted = new Date(`${date}T00:00:00`).toLocaleDateString('pt-BR', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-  })
-
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1)
-}
-
-function formatCurrentDate() {
-  const now = new Date()
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }
-  const formatted = now.toLocaleDateString('pt-BR', options)
-
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1)
-}
-
-function getCurrentWeekRange(): DateRange {
-  const today = new Date()
-  const dayOfWeek = today.getDay()
+function getCurrentWeekRange(today: string) {
+  const parsedToday = parseInputDate(today)
+  const dayOfWeek = parsedToday.getDay()
   const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
-  const start = addDays(today, mondayOffset)
-  const end = addDays(start, 6)
+  const start = new Date(parsedToday)
+  start.setDate(parsedToday.getDate() + mondayOffset)
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
 
   return {
     start: formatInputDate(start),
@@ -203,10 +135,10 @@ function getCurrentWeekRange(): DateRange {
   }
 }
 
-function getCurrentMonthRange(): DateRange {
-  const today = new Date()
-  const start = new Date(today.getFullYear(), today.getMonth(), 1)
-  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0)
+function getCurrentMonthRange() {
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth(), 1)
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0)
 
   return {
     start: formatInputDate(start),
@@ -214,410 +146,431 @@ function getCurrentMonthRange(): DateRange {
   }
 }
 
-function isDateInRange(date: string | null | undefined, range: DateRange) {
-  const normalizedDate = normalizeDate(date)
+function getCurrentDateLabel() {
+  const now = new Date()
 
-  return Boolean(normalizedDate && normalizedDate >= range.start && normalizedDate <= range.end)
+  return `${weekdays[now.getDay()]}, ${now.getDate()} de ${
+    months[now.getMonth()]
+  } de ${now.getFullYear()}`
 }
 
-function isActiveOrder(order: Order) {
-  return order.status !== 'cancelado'
+function getOrderBusinessDate(order: Order) {
+  return order.order_date ?? order.delivery_date
+}
+
+function isDateInRange(date: string | null | undefined, start: string, end: string) {
+  return Boolean(date && date >= start && date <= end)
 }
 
 function getCustomerName(order: Order) {
-  return order.customers?.name || 'Cliente não informado'
-}
+  const customer = order.customers
 
-function getOrderTitle(order: Order) {
-  const mainItem = order.order_items?.find((item) => !item.parent_order_item_id)
-
-  return mainItem?.item_name || order.notes || 'Pedido sem resumo'
-}
-
-function getOrderTotal(order: Order) {
-  return parseNumericValue(order.total_value)
-}
-
-function getOrderPeriodDate(order: Order) {
-  return order.delivery_date || order.order_date || null
-}
-
-function getReceivableReferenceDate(order: Order) {
-  return order.remaining_payment_date || order.delivery_date || null
-}
-
-function getOrderReceivable(order: Order) {
-  const remainingAmount = parseNumericValue(order.remaining_amount)
-
-  if (remainingAmount > 0) return remainingAmount
-
-  return 0
-}
-
-function calculateReceivedInRange(transactions: FinancialTransaction[], range: DateRange) {
-  return transactions
-    .filter(
-      (transaction) =>
-        transaction.type === 'entrada' && isDateInRange(transaction.transaction_date, range)
-    )
-    .reduce((sum, transaction) => sum + parseNumericValue(transaction.amount), 0)
-}
-
-function normalizeCostUnit(value: string | null | undefined) {
-  return (value ?? '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
-function calculateItemCost(item: OrderItem, recipeCostsById: Map<string, RecipeCost>) {
-  if (!item.recipe_id) {
-    return {
-      cost: 0,
-      hasCost: false,
-    }
+  if (Array.isArray(customer)) {
+    return customer[0]?.name?.trim() || 'Cliente'
   }
 
-  const recipe = recipeCostsById.get(item.recipe_id)
-  if (!recipe) {
-    return {
-      cost: 0,
-      hasCost: false,
-    }
-  }
-
-  const quantity = parseNumericValue(item.quantity)
-  const supplierCost = parseNumericValue(recipe.supplier_cost)
-  const supplierCostUnit = normalizeCostUnit(recipe.supplier_cost_unit)
-
-  if (recipe.is_third_party && supplierCost > 0) {
-    if (supplierCostUnit === 'pedido') {
-      return {
-        cost: supplierCost,
-        hasCost: true,
-      }
-    }
-
-    return {
-      cost: quantity * supplierCost,
-      hasCost: true,
-    }
-  }
-
-  const costPerUnit = parseNumericValue(recipe.cost_per_unit)
-  if (costPerUnit > 0) {
-    return {
-      cost: quantity * costPerUnit,
-      hasCost: true,
-    }
-  }
-
-  const totalCost = parseNumericValue(recipe.total_cost)
-  if (totalCost > 0) {
-    return {
-      cost: quantity * totalCost,
-      hasCost: true,
-    }
-  }
-
-  return {
-    cost: 0,
-    hasCost: false,
-  }
+  return customer?.name?.trim() || 'Cliente'
 }
 
-function calculateOrderCost(order: Order, recipeCostsById: Map<string, RecipeCost>) {
-  const items = order.order_items ?? []
-  const childrenByParentId = items.reduce<Map<string, OrderItem[]>>((groups, item) => {
-    if (!item.parent_order_item_id) return groups
-
-    const currentItems = groups.get(item.parent_order_item_id) ?? []
-    groups.set(item.parent_order_item_id, [...currentItems, item])
-
-    return groups
-  }, new Map())
-
-  const mainItems = items.filter((item) => !item.parent_order_item_id)
-  let cost = (order.order_cake_toppers ?? []).reduce(
-    (sum, cakeTopper) => sum + parseNumericValue(cakeTopper.cost),
-    0
-  )
-  let hasCost = cost > 0
-
-  mainItems.forEach((item) => {
-    const itemCost = calculateItemCost(item, recipeCostsById)
-
-    if (itemCost.hasCost) {
-      cost += itemCost.cost
-      hasCost = true
-      return
-    }
-
-    ;(childrenByParentId.get(item.id) ?? []).forEach((childItem) => {
-      const childCost = calculateItemCost(childItem, recipeCostsById)
-
-      if (childCost.hasCost) {
-        cost += childCost.cost
-        hasCost = true
-      }
-    })
-  })
-
-  if (mainItems.length === 0) {
-    items.forEach((item) => {
-      const itemCost = calculateItemCost(item, recipeCostsById)
-
-      if (itemCost.hasCost) {
-        cost += itemCost.cost
-        hasCost = true
-      }
-    })
-  }
-
-  return {
-    cost,
-    hasCost,
-  }
+function getProductDescription() {
+  return 'Pedido'
 }
 
-function calculatePeriodSummary(
-  orders: Order[],
-  transactions: FinancialTransaction[],
-  range: DateRange,
-  recipeCostsById: Map<string, RecipeCost>
-): PeriodSummary {
-  const ordersInPeriod = orders.filter(
-    (order) => isActiveOrder(order) && isDateInRange(getOrderPeriodDate(order), range)
-  )
-  const received = calculateReceivedInRange(transactions, range)
-  const receivable = orders
-    .filter((order) => {
-      if (!isActiveOrder(order)) return false
+function getInitials(name: string) {
+  const parts = name
+    .split(' ')
+    .map((part) => part.trim())
+    .filter(Boolean)
 
-      const receivable = getOrderReceivable(order)
-      const referenceDate = getReceivableReferenceDate(order)
+  if (parts.length === 0) return 'C'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
 
-      return receivable > 0 && isDateInRange(referenceDate, range)
-    })
-    .reduce((sum, order) => sum + getOrderReceivable(order), 0)
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+}
 
-  return ordersInPeriod.reduce<PeriodSummary>(
-    (summary, order) => {
-      const ordersTotal = getOrderTotal(order)
-      const orderCost = calculateOrderCost(order, recipeCostsById)
-      const profit = orderCost.hasCost
-        ? ordersTotal - orderCost.cost
-        : ordersTotal * simpleProfitMargin
+function normalizePaymentStatus(status: string | null | undefined) {
+  return status?.trim().toLowerCase() ?? ''
+}
 
-      return {
-        ordersTotal: summary.ordersTotal + ordersTotal,
-        received,
-        profit: summary.profit + profit,
-        orderCount: summary.orderCount + 1,
-        receivable,
-        hasSimpleProfit: summary.hasSimpleProfit || !orderCost.hasCost,
-      }
-    },
-    {
-      ordersTotal: 0,
-      received,
-      profit: 0,
-      orderCount: 0,
-      receivable,
-      hasSimpleProfit: false,
-    }
+function normalizeOrderStatus(status: string | null | undefined) {
+  const normalized = status?.trim().toLowerCase().replace(/_/g, ' ') ?? 'novo'
+
+  if (normalized.includes('produc')) return 'produção'
+  if (normalized.includes('pronto')) return 'pronto'
+  if (normalized.includes('entregue')) return 'entregue'
+
+  return 'novo'
+}
+
+function getStatusStyle(status: string | null | undefined) {
+  const normalized = normalizeOrderStatus(status)
+
+  if (normalized === 'produção') {
+    return { label: 'produção', className: 'bg-[#EEF0FE] text-[#3730A3]' }
+  }
+
+  if (normalized === 'pronto') {
+    return { label: 'pronto', className: 'bg-[#E6F4E6] text-[#2D6A2D]' }
+  }
+
+  if (normalized === 'entregue') {
+    return { label: 'entregue', className: 'bg-[#F0F0F0] text-[#888888]' }
+  }
+
+  return { label: 'novo', className: 'bg-[#FEF0DC] text-[#8B5E3C]' }
+}
+
+function formatDeliveryTime(time: string | null | undefined) {
+  if (!time) return 'sem hora'
+
+  const [hour = '', minute = ''] = time.split(':')
+
+  if (!hour) return 'sem hora'
+  if (minute && minute !== '00') return `${hour.padStart(2, '0')}h${minute}`
+
+  return `${hour.padStart(2, '0')}h`
+}
+
+function formatDeliveryDate(date: string | null | undefined, today: string) {
+  if (!date) return 'sem data'
+  if (date === today) return 'hoje'
+  if (date === addDays(today, 1)) return 'amanhã'
+
+  return shortDateFormatter.format(parseInputDate(date))
+}
+
+function compareOrdersByDelivery(firstOrder: Order, secondOrder: Order) {
+  const firstDate = firstOrder.delivery_date ?? '9999-12-31'
+  const secondDate = secondOrder.delivery_date ?? '9999-12-31'
+
+  if (firstDate !== secondDate) return firstDate.localeCompare(secondDate)
+
+  const firstTime = firstOrder.delivery_time ?? '99:99'
+  const secondTime = secondOrder.delivery_time ?? '99:99'
+
+  return firstTime.localeCompare(secondTime)
+}
+
+function CalendarIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M8 2v4" />
+      <path d="M16 2v4" />
+      <path d="M3.5 9.5h17" />
+      <path d="M5.5 5h13A2.5 2.5 0 0 1 21 7.5v11A2.5 2.5 0 0 1 18.5 21h-13A2.5 2.5 0 0 1 3 18.5v-11A2.5 2.5 0 0 1 5.5 5Z" />
+    </svg>
   )
 }
 
-function groupOrdersByDate(orders: Order[]) {
-  const groups = orders.reduce<Map<string, Order[]>>((currentGroups, order) => {
-    const deliveryDate = normalizeDate(getOrderPeriodDate(order))
-    if (!deliveryDate) return currentGroups
-
-    const currentOrders = currentGroups.get(deliveryDate) ?? []
-    currentGroups.set(deliveryDate, [...currentOrders, order])
-
-    return currentGroups
-  }, new Map())
-
-  return Array.from(groups.entries())
-    .sort(([firstDate], [secondDate]) => firstDate.localeCompare(secondDate))
-    .map(([date, groupedOrders]) => ({
-      date,
-      orders: groupedOrders.sort((firstOrder, secondOrder) =>
-        (firstOrder.delivery_time || '99:99').localeCompare(secondOrder.delivery_time || '99:99')
-      ),
-    }))
-}
-
-function buildNotifications(params: {
-  orders: Order[]
-  supplierOrders: SupplierOrder[]
-  today: string
-}): Notification[] {
-  const { orders, supplierOrders, today } = params
-  const todayOrders = orders.filter(
-    (order) => isActiveOrder(order) && normalizeDate(getOrderPeriodDate(order)) === today
+function AlertIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M10.4 4.2 2.9 17.1A2 2 0 0 0 4.6 20h14.8a2 2 0 0 0 1.7-2.9L13.6 4.2a1.9 1.9 0 0 0-3.2 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
   )
-  const ordersWithoutDate = orders.filter((order) => isActiveOrder(order) && !getOrderPeriodDate(order))
-  const dueTodayOrOverdue = orders.filter((order) => {
-    const receivable = getOrderReceivable(order)
-    const paymentDate = normalizeDate(getReceivableReferenceDate(order))
-
-    return isActiveOrder(order) && receivable > 0 && Boolean(paymentDate && paymentDate <= today)
-  })
-  const nextPaymentLimit = formatInputDate(addDays(new Date(`${today}T00:00:00`), 3))
-  const dueSoon = orders.filter((order) => {
-    const receivable = getOrderReceivable(order)
-    const paymentDate = normalizeDate(getReceivableReferenceDate(order))
-
-    return (
-      isActiveOrder(order) &&
-      receivable > 0 &&
-      Boolean(paymentDate && paymentDate > today && paymentDate <= nextPaymentLimit)
-    )
-  })
-
-  const notifications: Notification[] = []
-
-  if (supplierOrders.length > 0) {
-    notifications.push({
-      id: 'supplier-orders',
-      title: `${formatNumber(supplierOrders.length)} pedido(s) de fornecedor pendente(s)`,
-      description: `Custo estimado pendente: ${formatCurrency(
-        supplierOrders.reduce((sum, order) => sum + parseNumericValue(order.estimated_cost), 0)
-      )}`,
-      tone: 'warning',
-      actionUrl: '/pedidos-fornecedores?status=pendente',
-    })
-  }
-
-  if (todayOrders.length > 0) {
-    notifications.push({
-      id: 'today-orders',
-      title: `${formatNumber(todayOrders.length)} pedido(s) para hoje`,
-      description: 'Confira producao, retirada e entrega antes do horario combinado.',
-      tone: 'info',
-      actionUrl: '/pedidos',
-    })
-  }
-
-  if (ordersWithoutDate.length > 0) {
-    notifications.push({
-      id: 'missing-date',
-      title: `${formatNumber(ordersWithoutDate.length)} pedido(s) sem data`,
-      description: 'Complete a data de entrega/festa para entrar no planejamento.',
-      tone: 'danger',
-      actionUrl: '/pedidos',
-    })
-  }
-
-  if (dueTodayOrOverdue.length > 0) {
-    notifications.push({
-      id: 'receivable-due',
-      title: `${formatNumber(dueTodayOrOverdue.length)} recebimento(s) hoje ou vencido(s)`,
-      description: `Total a acompanhar: ${formatCurrency(
-        dueTodayOrOverdue.reduce((sum, order) => sum + getOrderReceivable(order), 0)
-      )}`,
-      tone: 'danger',
-      actionUrl: '/financeiro',
-    })
-  }
-
-  if (dueSoon.length > 0) {
-    notifications.push({
-      id: 'receivable-soon',
-      title: `${formatNumber(dueSoon.length)} recebimento(s) nos proximos 3 dias`,
-      description: `Total previsto: ${formatCurrency(
-        dueSoon.reduce((sum, order) => sum + getOrderReceivable(order), 0)
-      )}`,
-      tone: 'warning',
-      actionUrl: '/financeiro',
-    })
-  }
-
-  return notifications
 }
 
-async function loadSupplierOrders(
-  supabase: ReturnType<typeof createClient>,
-  userId: string
-): Promise<SupplierOrder[]> {
-  const { data, error } = await supabase
-    .from('supplier_orders')
-    .select('id, title, due_date, status, estimated_cost, customer_order_id')
-    .eq('user_id', userId)
-    .eq('status', 'pendente')
-    .order('due_date', { ascending: true })
-
-  if (!error) return (data ?? []) as SupplierOrder[]
-
-  logSupabaseError('Erro Supabase supplier_orders select:', error)
-
-  const fallback = await supabase
-    .from('supplier_orders')
-    .select('id, title, due_date, status, customer_order_id')
-    .eq('user_id', userId)
-    .eq('status', 'pendente')
-    .order('due_date', { ascending: true })
-
-  if (fallback.error) {
-    logSupabaseError('Erro Supabase supplier_orders fallback select:', fallback.error)
-    return []
-  }
-
-  return ((fallback.data ?? []) as SupplierOrder[]).map((order) => ({
-    ...order,
-    estimated_cost: null,
-  }))
+function HomeIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="m3 10.8 9-7 9 7" />
+      <path d="M5.5 9.5V20h13V9.5" />
+      <path d="M9.5 20v-6h5v6" />
+    </svg>
+  )
 }
 
-async function loadRecipeCosts(supabase: ReturnType<typeof createClient>, recipeIds: string[]) {
-  if (recipeIds.length === 0) return new Map<string, RecipeCost>()
+function OrdersIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M6.5 3.5h11l2 4v13h-15v-13l2-4Z" />
+      <path d="M4.5 7.5h15" />
+      <path d="M9 11h6" />
+      <path d="M9 15h4" />
+    </svg>
+  )
+}
 
-  const { data, error } = await supabase
-    .from('recipes')
-    .select('id, total_cost, cost_per_unit, supplier_cost, supplier_cost_unit, is_third_party')
-    .in('id', recipeIds)
+function RecipeIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M6 3.5h10.5A1.5 1.5 0 0 1 18 5v15.5H7A2.5 2.5 0 0 1 4.5 18V6A2.5 2.5 0 0 1 7 3.5" />
+      <path d="M8 7h6" />
+      <path d="M8 10.5h6" />
+      <path d="M8 14h4" />
+    </svg>
+  )
+}
 
-  if (!error) {
-    return new Map(((data ?? []) as RecipeCost[]).map((recipe) => [recipe.id, recipe]))
-  }
+function ProfileIcon({ className = '' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+      <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
+    </svg>
+  )
+}
 
-  logSupabaseError('Erro Supabase recipes cost select:', error)
+function SectionHeader({
+  title,
+  href,
+  actionLabel,
+}: {
+  title: string
+  href?: string
+  actionLabel?: string
+}) {
+  return (
+    <div className="mb-3 flex items-center justify-between">
+      <h2 className="text-[10px] font-bold uppercase tracking-[2px] text-[#8B5E3C]">{title}</h2>
+      {href && actionLabel ? (
+        <Link href={href} className="text-xs font-semibold text-[#D4845A]">
+          {actionLabel}
+        </Link>
+      ) : null}
+    </div>
+  )
+}
 
-  const fallback = await supabase
-    .from('recipes')
-    .select('id, total_cost, cost_per_unit')
-    .in('id', recipeIds)
+function LoadingSkeleton() {
+  return (
+    <div className="min-h-screen overflow-y-auto bg-[#F5ECD7] px-4 pb-[80px] pt-6">
+      <div className="mx-auto max-w-[1120px] space-y-5">
+        <div className="space-y-3">
+          <div className="h-3 w-16 animate-pulse rounded-full bg-[#E8D8C0]" />
+          <div className="h-8 w-64 max-w-full animate-pulse rounded-full bg-[#E8D8C0]" />
+          <div className="h-9 w-56 animate-pulse rounded-full bg-[#E8D8C0]" />
+        </div>
+        <div className="h-48 animate-pulse rounded-[22px] bg-[#E8D8C0]" />
+        <div className="flex gap-3 overflow-hidden">
+          <div className="h-28 min-w-[150px] flex-1 animate-pulse rounded-2xl bg-[#E8D8C0]" />
+          <div className="h-28 min-w-[150px] flex-1 animate-pulse rounded-2xl bg-[#E8D8C0]" />
+          <div className="h-28 min-w-[150px] flex-1 animate-pulse rounded-2xl bg-[#E8D8C0]" />
+        </div>
+        <div className="space-y-3">
+          <div className="h-4 w-24 animate-pulse rounded-full bg-[#E8D8C0]" />
+          <div className="h-24 animate-pulse rounded-2xl bg-[#E8D8C0]" />
+          <div className="h-24 animate-pulse rounded-2xl bg-[#E8D8C0]" />
+        </div>
+      </div>
+    </div>
+  )
+}
 
-  if (fallback.error) {
-    logSupabaseError('Erro Supabase recipes cost fallback select:', fallback.error)
-    return new Map<string, RecipeCost>()
-  }
+function MetricPill({
+  value,
+  label,
+  tag,
+  tagClassName,
+}: {
+  value: string
+  label: string
+  tag?: string
+  tagClassName?: string
+}) {
+  return (
+    <div className="min-w-[150px] flex-1 rounded-2xl border border-[#E8D8C0] bg-[#FFFAF2] p-4">
+      <div className="flex min-h-[24px] items-start justify-between gap-2">
+        <p className="text-2xl font-bold leading-none text-[#2C1A0E]">{value}</p>
+        {tag ? (
+          <span
+            className={`rounded-full px-2 py-1 text-[10px] font-bold leading-none ${tagClassName}`}
+          >
+            {tag}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-3 text-xs font-medium text-[#8B5E3C]">{label}</p>
+    </div>
+  )
+}
 
-  return new Map(((fallback.data ?? []) as RecipeCost[]).map((recipe) => [recipe.id, recipe]))
+function DeliveryCard({ order, today }: { order: Order; today: string }) {
+  const customerName = getCustomerName(order)
+  const status = getStatusStyle(order.status)
+
+  return (
+    <article className="flex gap-3 rounded-2xl border border-[#E8D8C0] bg-[#FFFAF2] px-[14px] py-3">
+      <div className="w-[54px] shrink-0">
+        <p className="text-base font-bold leading-tight text-[#D4845A]">
+          {formatDeliveryTime(order.delivery_time)}
+        </p>
+        <p className="mt-1 text-[11px] font-medium text-[#8B5E3C]">
+          {formatDeliveryDate(order.delivery_date, today)}
+        </p>
+      </div>
+      <div className="w-px shrink-0 bg-[#E8D8C0]" />
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#F3E4CC] text-xs font-bold text-[#8B5E3C]">
+          {getInitials(customerName)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-[#2C1A0E]">{customerName}</p>
+              <p className="truncate text-xs text-[#8B5E3C]">{getProductDescription()}</p>
+            </div>
+            <p className="shrink-0 text-sm font-bold text-[#2C1A0E]">
+              {formatCurrency(order.total_value)}
+            </p>
+          </div>
+          <span
+            className={`mt-2 inline-flex rounded-full px-2 py-1 text-[10px] font-bold ${status.className}`}
+          >
+            {status.label}
+          </span>
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function StockAlertCard({ ingredients }: { ingredients: Ingredient[] }) {
+  const barColors = ['#D4845A', '#C9A84C', '#8B5E3C']
+
+  return (
+    <section className="rounded-2xl border border-[#E8D8C0] bg-[#FFFAF2] p-4">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#FEF0DC] text-[#D4845A]">
+          <AlertIcon className="h-5 w-5" />
+        </div>
+        <div>
+          <h2 className="text-base font-bold text-[#2C1A0E]">
+            {ingredients.length} {ingredients.length === 1 ? 'ingrediente acabando' : 'ingredientes acabando'}
+          </h2>
+          <p className="text-xs text-[#8B5E3C]">abasteça antes de produzir</p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {ingredients.map((ingredient, index) => {
+          const stock = parseNumber(ingredient.stock_quantity)
+          const minimum = parseNumber(ingredient.minimum_stock)
+          const progress = minimum > 0 ? Math.min((stock / minimum) * 100, 100) : 0
+
+          return (
+            <div key={ingredient.id}>
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <p className="truncate text-sm font-semibold text-[#2C1A0E]">{ingredient.name}</p>
+                <p className="shrink-0 text-xs font-medium text-[#8B5E3C]">
+                  {stock.toLocaleString('pt-BR')} {ingredient.usage_unit ?? ''}
+                </p>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-[#E8D8C0]">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${progress}%`,
+                    backgroundColor: barColors[index] ?? '#8B5E3C',
+                  }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function BottomNav() {
+  const items = [
+    { href: '/dashboard', label: 'início', icon: HomeIcon, active: true },
+    { href: '/pedidos', label: 'pedidos', icon: OrdersIcon, active: false },
+    { href: '/receitas', label: 'receitas', icon: RecipeIcon, active: false },
+    { href: '/agenda', label: 'agenda', icon: CalendarIcon, active: false },
+    { href: '/configuracoes', label: 'perfil', icon: ProfileIcon, active: false },
+  ]
+
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-50 flex h-20 border-t border-[#E8D8C0] bg-[#FFFAF2] md:hidden">
+      {items.map((item) => {
+        const Icon = item.icon
+
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`flex flex-1 flex-col items-center justify-center gap-1 text-[9px] font-semibold ${
+              item.active ? 'text-[#D4845A]' : 'text-[#8B5E3C]'
+            }`}
+          >
+            <Icon className="h-5 w-5" />
+            <span>{item.label}</span>
+            <span
+              className={`h-1 w-1 rounded-full ${item.active ? 'bg-[#D4845A]' : 'bg-transparent'}`}
+            />
+          </Link>
+        )
+      })}
+    </nav>
+  )
 }
 
 export default function DashboardPage() {
-  const [userName, setUserName] = useState('Confeiteira')
-  const [dashboardData, setDashboardData] = useState(emptyDashboardData)
+  const supabase = useMemo(() => createClient(), [])
+  const today = useMemo(() => formatInputDate(new Date()), [])
+  const weekRange = useMemo(() => getCurrentWeekRange(today), [today])
+  const monthRange = useMemo(() => getCurrentMonthRange(), [])
+  const [userName, setUserName] = useState('confeiteira')
+  const [dashboardData, setDashboardData] = useState<DashboardData>(emptyData)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
-  const currentDate = useMemo(() => formatCurrentDate(), [])
-  const today = useMemo(() => formatInputDate(new Date()), [])
-  const weekRange = useMemo(() => getCurrentWeekRange(), [])
-  const monthRange = useMemo(() => getCurrentMonthRange(), [])
-  const transactionRange = useMemo(
-    () => ({
-      start: weekRange.start < monthRange.start ? weekRange.start : monthRange.start,
-      end: weekRange.end > monthRange.end ? weekRange.end : monthRange.end,
-    }),
-    [monthRange.end, monthRange.start, weekRange.end, weekRange.start]
-  )
-  const supabase = useMemo(() => createClient(), [])
-  const router = useRouter()
 
   useEffect(() => {
     let isMounted = true
@@ -633,147 +586,65 @@ export default function DashboardPage() {
         } = await supabase.auth.getUser()
 
         if (userError || !user) {
-          throw new Error('Usuária não autenticada')
+          throw new Error('Usuária não autenticada.')
         }
+
+        const fullName = user.user_metadata?.full_name
 
         if (isMounted) {
-          if (user.user_metadata?.full_name) {
-            setUserName(user.user_metadata.full_name.split(' ')[0])
-          } else if (user.email) {
-            setUserName(
-              user.email.split('@')[0].charAt(0).toUpperCase() + user.email.split('@')[0].slice(1)
-            )
-          }
+          setUserName(typeof fullName === 'string' && fullName.trim() ? fullName.trim() : 'confeiteira')
         }
 
-        const { data: ordersData, error: ordersError } = await supabase
-          .from('orders')
-          .select('id, user_id, customer_id, order_date, delivery_date, delivery_time, status, payment_status, total_value, deposit_value, delivery_address, notes, created_at, updated_at, fulfillment_type, delivery_fee, down_payment, remaining_amount, remaining_payment_date, discount_amount, manual_total, extras_total, is_recurring, recurrence_type, recurrence_count, first_occurrence_date')
-          .eq('user_id', user.id)
-          .order('delivery_date', { ascending: true })
-          .order('created_at', { ascending: false })
-
-        if (ordersError) {
-          console.error('Erro Supabase orders select:', {
-            message: ordersError?.message,
-            details: ordersError?.details,
-            hint: ordersError?.hint,
-            code: ordersError?.code,
-            fullError: ordersError,
-            stringified: JSON.stringify(ordersError, null, 2)
-          })
-          throw ordersError
-        }
-
-        const orders = (ordersData ?? []) as Order[]
-
-        const [orderItemsResult, cakeToppersResult, supplierOrders, transactionsResult] =
-          await Promise.all([
-            supabase
-              .from('order_items')
-              .select(
-                'id, order_id, recipe_id, parent_order_item_id, item_name, quantity, unit_price, subtotal, notes'
-              )
-              .eq('user_id', user.id),
-            supabase
-              .from('order_cake_toppers')
-              .select('id, order_id, cost')
-              .eq('user_id', user.id),
-            loadSupplierOrders(supabase, user.id),
-            supabase
-              .from('financial_transactions')
-              .select('id, type, amount, transaction_date')
-              .eq('user_id', user.id)
-              .eq('type', 'entrada')
-              .gte('transaction_date', transactionRange.start)
-              .lte('transaction_date', transactionRange.end),
-          ])
-
-        let orderItems: OrderItem[] = []
-        if (orderItemsResult.error) {
-          logSupabaseError('Erro Supabase order_items select:', orderItemsResult.error)
-        } else {
-          orderItems = (orderItemsResult.data ?? []) as OrderItem[]
-        }
-
-        let cakeToppers: OrderCakeTopper[] = []
-        if (cakeToppersResult.error) {
-          logSupabaseError('Erro Supabase order_cake_toppers select:', cakeToppersResult.error)
-        } else {
-          cakeToppers = (cakeToppersResult.data ?? []) as OrderCakeTopper[]
-        }
-
-        let transactions: FinancialTransaction[] = []
-        if (transactionsResult.error) {
-          logSupabaseError(
-            'Erro Supabase financial_transactions dashboard select:',
-            transactionsResult.error
-          )
-        } else {
-          transactions = (transactionsResult.data ?? []) as FinancialTransaction[]
-        }
-
-        const recipeIds = Array.from(
-          new Set(orderItems.map((item) => item.recipe_id).filter((id): id is string => Boolean(id)))
-        )
-        const customerIds = Array.from(
-          new Set(orders.map((order) => order.customer_id).filter((id): id is string => Boolean(id)))
-        )
-        const recipeCostsById = await loadRecipeCosts(supabase, recipeIds)
-        const customersById = new Map<string, CustomerSummary>()
-
-        if (customerIds.length > 0) {
-          const { data: customersData, error: customersError } = await supabase
-            .from('customers')
-            .select('id, name, phone')
+        const [ordersResult, ingredientsResult] = await Promise.all([
+          supabase
+            .from('orders')
+            .select('*, customers(name), order_items(id, quantity, unit_price)')
             .eq('user_id', user.id)
-            .in('id', customerIds)
+            .order('delivery_date', { ascending: true, nullsFirst: false })
+            .order('delivery_time', { ascending: true, nullsFirst: false }),
+          supabase
+            .from('ingredients')
+            .select('id, user_id, name, stock_quantity, minimum_stock, usage_unit')
+            .eq('user_id', user.id)
+            .order('name', { ascending: true }),
+        ])
 
-          if (customersError) {
-            logSupabaseError('Erro Supabase customers select:', customersError)
-          } else {
-            ;((customersData ?? []) as CustomerSummary[]).forEach((customer) => {
-              customersById.set(customer.id, customer)
-            })
-          }
-        }
+        if (ordersResult.error) throw ordersResult.error
+        if (ingredientsResult.error) throw ingredientsResult.error
 
-        const itemsByOrderId = orderItems.reduce<Map<string, OrderItem[]>>((groups, item) => {
-          const currentItems = groups.get(item.order_id) ?? []
-          groups.set(item.order_id, [...currentItems, item])
+        const orders = (ordersResult.data ?? []) as unknown as Order[]
+        const stockAlerts = ((ingredientsResult.data ?? []) as unknown as Ingredient[])
+          .filter((ingredient) => {
+            const stock = parseNumber(ingredient.stock_quantity)
+            const minimum = parseNumber(ingredient.minimum_stock)
 
-          return groups
-        }, new Map())
-        const cakeToppersByOrderId = cakeToppers.reduce<Map<string, OrderCakeTopper[]>>(
-          (groups, cakeTopper) => {
-            const currentItems = groups.get(cakeTopper.order_id) ?? []
-            groups.set(cakeTopper.order_id, [...currentItems, cakeTopper])
+            return minimum >= 0 && stock <= minimum
+          })
+          .sort((firstIngredient, secondIngredient) => {
+            const firstMinimum = parseNumber(firstIngredient.minimum_stock)
+            const secondMinimum = parseNumber(secondIngredient.minimum_stock)
+            const firstRatio =
+              firstMinimum > 0 ? parseNumber(firstIngredient.stock_quantity) / firstMinimum : 0
+            const secondRatio =
+              secondMinimum > 0 ? parseNumber(secondIngredient.stock_quantity) / secondMinimum : 0
 
-            return groups
-          },
-          new Map()
-        )
-
-        const hydratedOrders = orders.map((order) => ({
-          ...order,
-          customers: order.customer_id ? customersById.get(order.customer_id) ?? null : null,
-          order_items: itemsByOrderId.get(order.id) ?? [],
-          order_cake_toppers: cakeToppersByOrderId.get(order.id) ?? [],
-        }))
+            return firstRatio - secondRatio
+          })
+          .slice(0, 3)
 
         if (isMounted) {
-          setDashboardData({
-            orders: hydratedOrders,
-            supplierOrders,
-            transactions,
-            recipeCostsById,
-          })
+          setDashboardData({ orders, stockAlerts })
         }
       } catch (err) {
-        console.error('Erro ao carregar dashboard:', err)
+        console.error('Erro ao carregar dashboard:', JSON.stringify(err, null, 2))
+        console.error('Mensagem:', (err as any)?.message)
+        console.error('Detalhes:', (err as any)?.details)
+        console.error('Hint:', (err as any)?.hint)
+        console.error('Code:', (err as any)?.code)
+
         if (isMounted) {
-          setError('Falha ao carregar dados do dashboard')
-          setDashboardData(emptyDashboardData)
+          setError('Não foi possível carregar o dashboard agora.')
+          setDashboardData(emptyData)
         }
       } finally {
         if (isMounted) {
@@ -782,442 +653,135 @@ export default function DashboardPage() {
       }
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void loadDashboardData()
-    }, 0)
+    loadDashboardData()
 
     return () => {
       isMounted = false
-      window.clearTimeout(timeoutId)
     }
-  }, [supabase, transactionRange.end, transactionRange.start])
+  }, [supabase])
 
-  const activeOrders = useMemo(
-    () => dashboardData.orders.filter((order) => isActiveOrder(order)),
-    [dashboardData.orders]
+  const monthlyOrders = dashboardData.orders.filter((order) =>
+    isDateInRange(getOrderBusinessDate(order), monthRange.start, monthRange.end)
   )
-
-  const todayOrders = useMemo(() => {
-    return activeOrders
-      .filter((order) => normalizeDate(getOrderPeriodDate(order)) === today)
-      .sort((firstOrder, secondOrder) =>
-        (firstOrder.delivery_time || '99:99').localeCompare(secondOrder.delivery_time || '99:99')
-      )
-  }, [activeOrders, today])
-
-  const upcomingOrdersByDate = useMemo(() => {
-    const endDate = formatInputDate(addDays(new Date(`${today}T00:00:00`), upcomingDays))
-    const orders = activeOrders.filter((order) => {
-      const deliveryDate = normalizeDate(getOrderPeriodDate(order))
-
-      return Boolean(deliveryDate && deliveryDate > today && deliveryDate <= endDate)
-    })
-
-    return groupOrdersByDate(orders)
-  }, [activeOrders, today])
-
-  const weekSummary = useMemo(
-    () =>
-      calculatePeriodSummary(
-        activeOrders,
-        dashboardData.transactions,
-        weekRange,
-        dashboardData.recipeCostsById
-      ),
-    [activeOrders, dashboardData.recipeCostsById, dashboardData.transactions, weekRange]
+  const weeklyOrders = dashboardData.orders.filter((order) =>
+    isDateInRange(getOrderBusinessDate(order), weekRange.start, weekRange.end)
   )
-  const monthSummary = useMemo(
-    () =>
-      calculatePeriodSummary(
-        activeOrders,
-        dashboardData.transactions,
-        monthRange,
-        dashboardData.recipeCostsById
-      ),
-    [activeOrders, dashboardData.recipeCostsById, dashboardData.transactions, monthRange]
+  const todayDeliveries = dashboardData.orders.filter((order) => order.delivery_date === today)
+  const openReceivables = dashboardData.orders.filter(
+    (order) => normalizePaymentStatus(order.payment_status) !== 'pago'
   )
-
-  const notifications = useMemo(
-    () =>
-      buildNotifications({
-        orders: activeOrders,
-        supplierOrders: dashboardData.supplierOrders,
-        today,
-      }),
-    [activeOrders, dashboardData.supplierOrders, today]
+  const upcomingDeliveries = dashboardData.orders
+    .filter((order) => order.delivery_date && order.delivery_date >= today)
+    .sort(compareOrdersByDelivery)
+    .slice(0, 3)
+  const monthlyRevenue = monthlyOrders.reduce(
+    (total, order) => total + parseNumber(order.total_value),
+    0
   )
+  const monthlyProgress = Math.min((monthlyRevenue / monthlyGoal) * 100, 100)
+  const receivableTotal = openReceivables.reduce((total, order) => {
+    const openValue = parseNumber(order.total_value) - parseNumber(order.deposit_value)
 
-  const weeklyChartData = useMemo(() => {
-    const startDate = new Date(`${weekRange.start}T00:00:00`)
+    return total + Math.max(openValue, 0)
+  }, 0)
 
-    return Array.from({ length: 7 }, (_, index) => {
-      const date = formatInputDate(addDays(startDate, index))
-      const ordersTotal = activeOrders
-        .filter((order) => normalizeDate(getOrderPeriodDate(order)) === date)
-        .reduce((sum, order) => sum + getOrderTotal(order), 0)
-
-      return {
-        day: new Date(`${date}T00:00:00`).toLocaleDateString('pt-BR', { weekday: 'short' }),
-        value: ordersTotal,
-      }
-    })
-  }, [activeOrders, weekRange.start])
-
-  const maxChartValue = Math.max(...weeklyChartData.map((data) => data.value), 1)
-  const hasBellAlert = notifications.length > 0
-
-  const metricCards = [
-    {
-      label: 'Pedidos hoje',
-      value: formatNumber(todayOrders.length),
-      helper: `${formatCurrency(todayOrders.reduce((sum, order) => sum + getOrderTotal(order), 0))} em pedidos`,
-      icon: CalendarDays,
-    },
-    {
-      label: 'Pedidos da semana',
-      value: formatCurrency(weekSummary.ordersTotal),
-      helper: `${formatNumber(weekSummary.orderCount)} pedido(s) por entrega`,
-      icon: Receipt,
-    },
-    {
-      label: 'Pedidos do mes',
-      value: formatCurrency(monthSummary.ordersTotal),
-      helper: `${formatNumber(monthSummary.orderCount)} pedido(s) por entrega`,
-      icon: Receipt,
-    },
-    {
-      label: 'Recebido na semana',
-      value: formatCurrency(weekSummary.received),
-      helper: 'Entradas registradas no periodo',
-      icon: DollarSign,
-    },
-    {
-      label: 'Recebido no mes',
-      value: formatCurrency(monthSummary.received),
-      helper: 'Entradas registradas no periodo',
-      icon: DollarSign,
-    },
-    {
-      label: 'A receber na semana',
-      value: formatCurrency(weekSummary.receivable),
-      helper: 'Por data prevista de recebimento',
-      icon: Wallet,
-    },
-    {
-      label: 'A receber no mes',
-      value: formatCurrency(monthSummary.receivable),
-      helper: 'Por data prevista de recebimento',
-      icon: Wallet,
-    },
-    {
-      label: 'Lucro estimado dos pedidos da semana',
-      value: formatCurrency(weekSummary.profit),
-      helper: weekSummary.hasSimpleProfit ? 'Estimativa simples em parte' : 'Com custos cadastrados',
-      icon: TrendingUp,
-    },
-    {
-      label: 'Lucro estimado dos pedidos do mes',
-      value: formatCurrency(monthSummary.profit),
-      helper: monthSummary.hasSimpleProfit ? 'Estimativa simples em parte' : 'Com custos cadastrados',
-      icon: TrendingUp,
-    },
-  ]
-
-  function renderOrderRow(order: Order) {
-    const customerName = getCustomerName(order)
-    const initials = customerName
-      .split(' ')
-      .map((namePart) => namePart[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2)
-
-    return (
-      <Link
-        key={order.id}
-        href={`/pedidos/${order.id}`}
-        className="block overflow-hidden rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white transition-shadow hover:shadow-md"
-      >
-        <div className="flex flex-col gap-3 border-l-4 border-[#C0392B] p-4 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
-            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
-              {initials || 'DP'}
-            </div>
-            <div className="min-w-0">
-              <p className="truncate font-semibold text-[#1A0A08]">{customerName}</p>
-              <p className="truncate text-sm text-[#999999]">{getOrderTitle(order)}</p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 sm:flex-shrink-0 sm:justify-end">
-            <div className="text-left sm:text-right">
-              <p className="text-sm font-semibold text-[#1A0A08]">
-                {order.delivery_time || 'Sem horario'}
-              </p>
-              <p className="text-sm font-bold text-[#C9A84C]">{formatCurrency(order.total_value)}</p>
-            </div>
-            <span className="rounded-full bg-[#FAF6F0] px-3 py-1.5 text-xs font-semibold text-[#1A0A08]">
-              {order.status || 'novo'}
-            </span>
-          </div>
-        </div>
-      </Link>
-    )
+  if (isLoading) {
+    return <LoadingSkeleton />
   }
 
   return (
-    <div className="w-full pb-24 lg:pb-8">
-      <header className="sticky top-0 z-20 hidden border-b border-[rgba(26,10,8,0.07)] bg-white lg:block">
-        <div className="flex items-center justify-between px-6 py-4">
+    <div className="min-h-screen overflow-y-auto bg-[#F5ECD7] px-4 pb-[80px] pt-6 text-[#2C1A0E] sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-[1120px] space-y-5">
+        <header className="space-y-3">
           <div>
-            <h1 className="text-2xl font-semibold text-[#1A0A08]">Bom dia, {userName}</h1>
-            <p className="text-sm text-[#999999]">{currentDate}</p>
+            <p className="text-xs font-medium text-[#8B5E3C]">bom dia</p>
+            <h1 className="mt-1 text-2xl font-bold leading-tight text-[#2C1A0E]">
+              sua cozinha te espera, {userName}
+            </h1>
           </div>
-          <div className="flex items-center gap-6">
-            <div className="relative">
-              <Bell
-                size={24}
-                className="cursor-pointer text-[#1A0A08] transition-colors hover:text-[#C0392B]"
-                aria-hidden="true"
+          <div className="inline-flex items-center gap-2 rounded-[20px] border border-[#E8D8C0] bg-[#FFFAF2] px-3 py-2 text-xs font-medium text-[#8B5E3C]">
+            <CalendarIcon className="h-4 w-4 text-[#D4845A]" />
+            <span>{getCurrentDateLabel()}</span>
+          </div>
+        </header>
+
+        {error ? (
+          <div className="rounded-2xl border border-[#E8D8C0] bg-[#FFFAF2] p-4 text-sm text-[#8B5E3C]">
+            {error}
+          </div>
+        ) : null}
+
+        <section className="relative overflow-hidden rounded-[22px] bg-[#2C1A0E] p-5">
+          <div
+            className="absolute -right-10 -top-8 h-32 w-32 rounded-full"
+            style={{ backgroundColor: 'rgba(212, 132, 90, 0.16)' }}
+          />
+          <div
+            className="absolute -bottom-14 right-12 h-28 w-28 rounded-full"
+            style={{ backgroundColor: 'rgba(212, 132, 90, 0.10)' }}
+          />
+          <div className="relative">
+            <p className="text-[10px] font-bold uppercase tracking-[2px] text-[#C9A84C]">
+              RECEITA DO MÊS
+            </p>
+            <p className="mt-4 text-[32px] font-bold leading-none text-[#FFFAF2]">
+              {formatCurrency(monthlyRevenue)}
+            </p>
+            <p className="mt-2 text-sm text-[rgba(255,250,242,0.45)]">meta de R$ 6.000</p>
+            <div className="mt-5 h-3 overflow-hidden rounded-full bg-[rgba(255,255,255,0.10)]">
+              <div
+                className="h-full rounded-full bg-[#C9A84C]"
+                style={{ width: `${monthlyProgress}%` }}
               />
-              {hasBellAlert && (
-                <div className="absolute right-0 top-0 h-2 w-2 rounded-full bg-[#C0392B]" />
-              )}
-            </div>
-            <div className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-[#C0392B] text-sm font-bold text-white">
-              {userName.charAt(0).toUpperCase()}
             </div>
           </div>
-        </div>
-      </header>
+        </section>
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 lg:px-6 lg:py-8">
-        {error && (
-          <div className="mb-5 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-[#C0392B]">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
-            <span>{error}</span>
+        <section className="flex gap-3 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none]">
+          <MetricPill
+            value={String(todayDeliveries.length)}
+            label="entregas hoje"
+            tag={todayDeliveries.length > 0 ? 'urgente' : undefined}
+            tagClassName="bg-[#FEF0DC] text-[#8B5E3C]"
+          />
+          <MetricPill
+            value={String(monthlyOrders.length)}
+            label="pedidos no mês"
+            tag={`+${weeklyOrders.length} semana`}
+            tagClassName="bg-[#E6F4E6] text-[#2D6A2D]"
+          />
+          <MetricPill
+            value={formatCurrency(receivableTotal)}
+            label="a receber"
+            tag={`${openReceivables.length} abertos`}
+            tagClassName="bg-[#FFF4C7] text-[#8B5E3C]"
+          />
+        </section>
+
+        <section>
+          <SectionHeader title="ENTREGAS" href="/agenda" actionLabel="ver agenda" />
+          <div className="space-y-3">
+            {upcomingDeliveries.length > 0 ? (
+              upcomingDeliveries.map((order) => (
+                <DeliveryCard key={order.id} order={order} today={today} />
+              ))
+            ) : (
+              <div className="rounded-2xl border border-[#E8D8C0] bg-[#FFFAF2] p-4 text-sm text-[#8B5E3C]">
+                Nenhuma entrega programada por enquanto.
+              </div>
+            )}
           </div>
-        )}
+        </section>
 
-        {isLoading ? (
-          <div className="py-14 text-center">
-            <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#F1D7CF] border-b-[#C0392B]" />
-            <p className="mt-3 text-sm text-[#999999]">Carregando painel operacional...</p>
-          </div>
-        ) : (
-          <>
-            <section className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="min-w-0">
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-[#C9A84C]">
-                      Operacao de hoje
-                    </p>
-                    <h2 className="mt-1 text-xl font-bold text-[#1A0A08]">
-                      {formatNumber(todayOrders.length)} pedido(s) para hoje
-                    </h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => router.push('/pedidos/novo')}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#C0392B] px-4 py-2.5 font-semibold text-white transition-colors hover:bg-[#A0301F]"
-                  >
-                    <Plus size={18} aria-hidden="true" />
-                    <span>Novo pedido</span>
-                  </button>
-                </div>
+        {dashboardData.stockAlerts.length > 0 ? (
+          <section>
+            <SectionHeader title="ESTOQUE - ATENÇÃO" />
+            <StockAlertCard ingredients={dashboardData.stockAlerts} />
+          </section>
+        ) : null}
+      </div>
 
-                {todayOrders.length === 0 ? (
-                  <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] px-4 py-8 text-center">
-                    <PackageCheck
-                      className="mx-auto mb-3 h-10 w-10 text-[#C9A84C]"
-                      aria-hidden="true"
-                    />
-                    <p className="font-semibold text-[#1A0A08]">Nenhum pedido para hoje</p>
-                    <p className="mt-1 text-sm text-[#999999]">
-                      Sua agenda do dia esta livre no dashboard.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">{todayOrders.map((order) => renderOrderRow(order))}</div>
-                )}
-              </div>
-
-              <div>
-                <div className="mb-4 flex items-center gap-2">
-                  <AlertTriangle size={18} className="text-[#C0392B]" aria-hidden="true" />
-                  <h2 className="text-lg font-bold text-[#1A0A08]">Notificacoes importantes</h2>
-                </div>
-
-                {notifications.length === 0 ? (
-                  <div className="rounded-[16px] bg-[#FAF6F0] px-4 py-8 text-center">
-                    <p className="font-semibold text-[#1A0A08]">Nada critico agora</p>
-                    <p className="mt-1 text-sm text-[#999999]">
-                      Pedidos, fornecedores e recebimentos estao sem alerta.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {notifications.map((notification) => {
-                      const toneClass =
-                        notification.tone === 'danger'
-                          ? 'border-red-200 bg-red-50 text-[#C0392B] hover:bg-red-100 hover:border-red-300 shadow-sm hover:shadow-md'
-                          : notification.tone === 'warning'
-                            ? 'border-[#F1D7A8] bg-[#FFF7E1] text-[#8A6B1F] hover:bg-[#FFF2CD] hover:border-[#E8C68E] shadow-sm hover:shadow-md'
-                            : 'border-[#DDE8F6] bg-[#F4F8FD] text-[#1A0A08] hover:bg-[#EAF2FA] hover:border-[#C4D8F0] shadow-sm hover:shadow-md'
-
-                      return (
-                        <Link
-                          href={notification.actionUrl}
-                          key={notification.id}
-                          className={`group block rounded-[16px] border p-3 transition-all cursor-pointer ${toneClass}`}
-                        >
-                          <div className="flex justify-between items-start gap-2">
-                            <div>
-                              <p className="font-bold group-hover:underline">{notification.title}</p>
-                              <p className="mt-1 text-sm opacity-85">{notification.description}</p>
-                            </div>
-                            <span className="text-xs font-semibold opacity-60 group-hover:opacity-100 transition-opacity whitespace-nowrap mt-0.5">
-                              Ver detalhes →
-                            </span>
-                          </div>
-                        </Link>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="mb-8">
-              <p className="mb-3 text-sm text-[#6F625F]">
-                Pedidos do periodo usam a data de entrega. Recebidos usam a data de
-                entrada/recebimento.
-              </p>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {metricCards.map((metric) => {
-                  const Icon = metric.icon
-
-                  return (
-                    <div
-                      key={metric.label}
-                      className="rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-4 transition-shadow hover:shadow-md"
-                    >
-                      <div className="mb-3 flex items-start justify-between gap-3">
-                        <p className="text-xs font-medium text-[#999999]">{metric.label}</p>
-                        <Icon size={20} className="text-[#C9A84C]" aria-hidden="true" />
-                      </div>
-                      <p className="text-2xl font-bold text-[#1A0A08]">{metric.value}</p>
-                      <p className="mt-2 text-xs font-semibold text-[#6F625F]">{metric.helper}</p>
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
-
-            <section className="mb-8 rounded-[16px] border border-[rgba(26,10,8,0.07)] bg-white p-5">
-              <div className="mb-6 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-[#1A0A08]">Pedidos da semana</h2>
-                  <p className="text-sm text-[#999999]">
-                    {formatDate(weekRange.start)} a {formatDate(weekRange.end)}
-                  </p>
-                </div>
-                <p className="text-sm font-bold text-[#C0392B]">
-                  Total {formatCurrency(weekSummary.ordersTotal)}
-                </p>
-              </div>
-
-              <svg viewBox="0 0 600 160" className="h-40 w-full" preserveAspectRatio="xMidYMid meet">
-                <line
-                  x1="20"
-                  y1="130"
-                  x2="580"
-                  y2="130"
-                  stroke="rgba(26,10,8,0.08)"
-                  strokeWidth="1"
-                />
-
-                {weeklyChartData.map((data, index) => {
-                  const barHeight = (data.value / maxChartValue) * 110
-                  const x = 20 + index * 80
-                  const y = 130 - barHeight
-                  const isMax = data.value === maxChartValue && data.value > 0
-                  const fill = isMax ? '#C9A84C' : '#C0392B'
-
-                  return (
-                    <g key={`${data.day}-${index}`}>
-                      <rect
-                        x={x + 10}
-                        y={y}
-                        width="50"
-                        height={barHeight}
-                        fill={fill}
-                        rx="4"
-                      />
-                      <text
-                        x={x + 35}
-                        y={barHeight > 12 ? y - 5 : 122}
-                        textAnchor="middle"
-                        fontSize="10"
-                        fill="#1A0A08"
-                        fontWeight="500"
-                      >
-                        {formatCompactCurrency(data.value)}
-                      </text>
-                      <text x={x + 35} y="145" textAnchor="middle" fontSize="11" fill="#999999">
-                        {data.day.replace('.', '')}
-                      </text>
-                    </g>
-                  )
-                })}
-              </svg>
-            </section>
-
-            <section>
-              <div className="mb-4 flex items-center gap-2">
-                <CalendarDays size={20} className="text-[#C0392B]" aria-hidden="true" />
-                <h2 className="text-lg font-bold text-[#1A0A08]">
-                  Proximos pedidos por dia
-                </h2>
-              </div>
-
-              {upcomingOrdersByDate.length === 0 ? (
-                <div className="rounded-[16px] border border-dashed border-[rgba(26,10,8,0.16)] bg-white px-4 py-10 text-center">
-                  <p className="text-base font-semibold text-[#1A0A08]">
-                    Nenhum pedido nos proximos {upcomingDays} dias
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-5">
-                  {upcomingOrdersByDate.map((group) => (
-                    <div key={group.date}>
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <h3 className="font-bold text-[#1A0A08]">{formatDateTitle(group.date)}</h3>
-                        <span className="rounded-full bg-[#FAF6F0] px-3 py-1 text-xs font-semibold text-[#999999]">
-                          {formatNumber(group.orders.length)} pedido(s)
-                        </span>
-                      </div>
-                      <div className="space-y-3">
-                        {group.orders.map((order) => renderOrderRow(order))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
-
-        <button
-          type="button"
-          onClick={() => router.push('/pedidos/novo')}
-          className="fixed bottom-24 right-4 z-10 flex h-14 w-14 items-center justify-center rounded-full bg-[#C0392B] text-white shadow-lg transition-all duration-200 hover:bg-[#A0301F] active:scale-95 lg:hidden"
-          aria-label="Novo pedido"
-        >
-          <Plus size={28} aria-hidden="true" />
-        </button>
-      </main>
+      <BottomNav />
     </div>
   )
 }

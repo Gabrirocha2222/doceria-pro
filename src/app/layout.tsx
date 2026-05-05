@@ -15,6 +15,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Doceria Pro",
+  applicationName: "Doceria Pro",
+  description: "Gestão de pedidos, produção, compras e financeiro para doceria.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
@@ -42,7 +44,6 @@ export const metadata: Metadata = {
       },
     ],
   },
-  description: "Sistema de gestão para confeitarias",
 };
 
 export const viewport: Viewport = {

@@ -1,10 +1,13 @@
 {
   "name": "Doceria Pro",
   "short_name": "Doceria Pro",
+  "description": "Gestão de pedidos, produção, compras e financeiro para doceria.",
   "start_url": "/dashboard",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#FAF6F0",
   "theme_color": "#C0392B",
+  "orientation": "portrait",
   "icons": [
     {
       "src": "/icons/icon-192.png",
